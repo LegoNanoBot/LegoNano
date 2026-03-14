@@ -9,6 +9,7 @@ from loguru import logger
 
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
+from nanobot.channels.channel_plugins import create_channel_by_factory, get_channel_factory
 from nanobot.config.schema import Config
 
 
@@ -31,7 +32,7 @@ class ChannelManager:
         self._init_channels()
 
     def _init_channels(self) -> None:
-        """Initialize channels discovered via pkgutil scan."""
+        """Initialize built-in and plugin channels."""
         from nanobot.channels.registry import discover_channel_names, load_channel_class
 
         groq_key = self.config.providers.groq.api_key
@@ -49,11 +50,52 @@ class ChannelManager:
             except ImportError as e:
                 logger.warning("{} channel not available: {}", modname, e)
 
+        for raw_name, section in self.config.channels.plugins.items():
+            if not section or not getattr(section, "enabled", False):
+                continue
+
+            channel_name = raw_name.replace("-", "_")
+            if channel_name in self.channels:
+                logger.warning("Ignore channel plugin {}: duplicate channel name", channel_name)
+                continue
+
+            factory = get_channel_factory(channel_name)
+            if not factory:
+                logger.warning("{} channel plugin not available", raw_name)
+                continue
+
+            app_config = section.model_dump(by_alias=True)
+            try:
+                channel = create_channel_by_factory(
+                    factory,
+                    config=self.config,
+                    bus=self.bus,
+                    channel_name=channel_name,
+                    app_config=app_config,
+                )
+            except Exception as e:
+                logger.warning("{} channel plugin failed to initialize: {}", raw_name, e)
+                continue
+
+            if not isinstance(channel, BaseChannel):
+                logger.warning(
+                    "Ignore channel plugin {}: factory must return BaseChannel",
+                    raw_name,
+                )
+                continue
+
+            channel.transcription_api_key = groq_key
+            self.channels[channel_name] = channel
+            logger.info("{} channel enabled", getattr(channel, "display_name", raw_name))
+
         self._validate_allow_from()
 
     def _validate_allow_from(self) -> None:
         for name, ch in self.channels.items():
-            if getattr(ch.config, "allow_from", None) == []:
+            allow_from = getattr(ch.config, "allow_from", None)
+            if allow_from is None and isinstance(ch.config, dict):
+                allow_from = ch.config.get("allow_from")
+            if allow_from == []:
                 raise SystemExit(
                     f'Error: "{name}" has empty allowFrom (denies all). '
                     f'Set ["*"] to allow everyone, or add specific user IDs.'

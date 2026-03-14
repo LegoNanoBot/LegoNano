@@ -750,6 +750,7 @@ app.add_typer(channels_app, name="channels")
 @channels_app.command("status")
 def channels_status():
     """Show channel status."""
+    from nanobot.channels.channel_plugins import get_channel_factory
     from nanobot.channels.registry import discover_channel_names, load_channel_class
     from nanobot.config.loader import load_config
 
@@ -770,6 +771,22 @@ def channels_status():
         table.add_row(
             display,
             "[green]\u2713[/green]" if enabled else "[dim]\u2717[/dim]",
+        )
+
+    for raw_name, section in sorted(config.channels.plugins.items(), key=lambda item: item[0]):
+        enabled = bool(section and getattr(section, "enabled", False))
+        channel_name = raw_name.replace("-", "_")
+        factory = get_channel_factory(channel_name)
+        available = factory is not None
+
+        if enabled and not available:
+            status = "[yellow]![/yellow]"
+        else:
+            status = "[green]\u2713[/green]" if enabled else "[dim]\u2717[/dim]"
+
+        table.add_row(
+            f"{raw_name} (plugin)",
+            status,
         )
 
     console.print(table)

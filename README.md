@@ -1013,6 +1013,50 @@ ProviderSpec(
 
 </details>
 
+<details>
+<summary><b>Adding a New Channel Plugin (Developer Guide)</b></summary>
+
+nanobot supports channel plugins via Python entry points.
+
+Complete example (DingTalk richtext + attachment download): `examples/channel-plugin-dingtalk-richtext/`
+
+Register a channel factory in your plugin `pyproject.toml`:
+
+```toml
+[project.entry-points."nanobot.channel_factories"]
+my-channel = "plugin_bot_xxx.channel_factory:create_channel"
+```
+
+Factory signature:
+
+```python
+def create_channel(*, config, bus, channel_name, app_config):
+    ...
+```
+
+Config for plugin channels goes under `channels.plugins`:
+
+```json
+{
+  "channels": {
+    "plugins": {
+      "my_channel": {
+        "enabled": true,
+        "allowFrom": ["*"],
+        "anyCustomField": "value"
+      }
+    }
+  }
+}
+```
+
+Notes:
+
+- Entry point name `my-channel` maps to config key `my_channel` (hyphen and underscore are treated equivalently).
+- `app_config` is the channel plugin config object under `channels.plugins.<name>`.
+
+</details>
+
 
 ### Web Search
 

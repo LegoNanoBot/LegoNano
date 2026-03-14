@@ -211,6 +211,13 @@ class WecomConfig(Base):
     welcome_message: str = ""  # Welcome message for enter_chat event
 
 
+class ChannelPluginConfig(Base):
+    """Generic plugin channel configuration."""
+
+    enabled: bool = False
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="allow")
+
+
 class ChannelsConfig(Base):
     """Configuration for chat channels."""
 
@@ -227,6 +234,7 @@ class ChannelsConfig(Base):
     qq: QQConfig = Field(default_factory=QQConfig)
     matrix: MatrixConfig = Field(default_factory=MatrixConfig)
     wecom: WecomConfig = Field(default_factory=WecomConfig)
+    plugins: dict[str, ChannelPluginConfig] = Field(default_factory=dict)  # Third-party channel configs
 
 
 class AgentDefaults(Base):
