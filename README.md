@@ -133,6 +133,22 @@ cd nanobot
 pip install -e .
 ```
 
+### Development Environment
+
+For repository development, use the dedicated conda environment committed to this repo:
+
+```bash
+conda env create -f environment.yml
+conda activate legonanobot
+pip install -e .[dev]
+```
+
+Run tests with local package precedence so pytest does not import an already-installed `nanobot` package from another environment:
+
+```bash
+PYTHONPATH=. pytest -q
+```
+
 **Install with [uv](https://github.com/astral-sh/uv)** (stable, fast)
 
 ```bash
@@ -758,6 +774,56 @@ Simply send the command above to your nanobot (via CLI or any chat channel), and
 ## ⚙️ Configuration
 
 Config file: `~/.nanobot/config.json`
+
+### Task Receipt
+
+When a channel receives a user task, nanobot can immediately send a short receipt before the task is pushed into the processing bus. This is controlled by `channels.taskReceipt` globally, with optional per-channel overrides.
+
+Global example:
+
+```json
+{
+  "channels": {
+    "taskReceipt": {
+      "enabled": true,
+      "message": "我收到了请求了, 当前在执行请求有哪些",
+      "skipCommands": true,
+      "skipEmpty": true,
+      "skipSystem": true
+    }
+  }
+}
+```
+
+Per-channel override example:
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "taskReceipt": {
+        "message": "已收到，正在处理"
+      }
+    },
+    "email": {
+      "enabled": true,
+      "taskReceipt": {
+        "enabled": false
+      }
+    }
+  }
+}
+```
+
+Notes:
+
+- `enabled`: turn task receipts on or off.
+- `message`: receipt text sent before the task enters the bus.
+- `skipCommands`: do not send receipts for command-style messages such as `/stop`.
+- `skipEmpty`: do not send receipts for empty messages.
+- `skipSystem`: do not send receipts for system-generated inbound events.
+- Email defaults to `enabled: false` to avoid sending an extra acknowledgement email before the final reply.
 
 ### Providers
 
