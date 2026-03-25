@@ -543,10 +543,102 @@ def gateway(
 
     console.print(f"[green]✓[/green] Heartbeat: every {hb_cfg.interval_s}s")
 
+    # --- X-Ray monitoring (optional) ---
+    xray_server = None
+    xray_observer = None
+    xray_store = None
+
+    if config.xray.enabled:
+        from loguru import logger
+        try:
+            from nanobot.xray import XRAY_AVAILABLE
+            if not XRAY_AVAILABLE:
+                logger.warning(
+                    "X-Ray is enabled but dependencies are not installed. "
+                    "Run: pip install -e '.[xray]'"
+                )
+            else:
+                from nanobot.xray.store.sqlite import SQLiteEventStore
+                from nanobot.xray.sse import SSEHub
+                from nanobot.xray.collector import EventCollector
+                from nanobot.xray.observer import XRayObserver
+                from nanobot.xray.app import create_xray_app
+                import uvicorn
+
+                # 初始化存储
+                db_path = str(config.workspace_path / config.xray.db_path)
+                xray_store = SQLiteEventStore(db_path)
+                asyncio.get_event_loop().run_until_complete(xray_store.init())
+
+                # 初始化 SSE 和 Collector
+                sse_hub = SSEHub()
+                collector = EventCollector()
+                collector.set_store(xray_store)
+                collector.set_sse_hub(sse_hub)
+
+                # 创建 Observer 并注入
+                xray_observer = XRayObserver(collector)
+                agent.observer = xray_observer
+                if hasattr(agent, 'tools') and agent.tools:
+                    agent.tools.observer = xray_observer
+                # 也注入到 subagent manager（如果存在）
+                if hasattr(agent, 'subagents') and agent.subagents:
+                    agent.subagents.observer = xray_observer
+
+                # 创建 FastAPI 应用
+                config_refs = {
+                    "memory_store": memory_store,
+                    "skills_loader": getattr(agent.context, 'skills', None),
+                    "tool_registry": agent.tools,
+                    "workspace": str(config.workspace_path),
+                    "bot_config": config,
+                }
+                xray_app = create_xray_app(xray_store, sse_hub, collector, config_refs)
+
+                # 启动 uvicorn 服务器（内嵌到 asyncio loop）
+                uvi_config = uvicorn.Config(
+                    xray_app,
+                    host=config.xray.host,
+                    port=config.xray.port,
+                    log_level="warning",
+                )
+                xray_server = uvicorn.Server(uvi_config)
+
+                console.print(
+                    f"[green]✓[/green] X-Ray monitoring at http://{config.xray.host}:{config.xray.port}"
+                )
+        except Exception as e:
+            from loguru import logger
+            logger.error(f"Failed to start X-Ray: {e}")
+
     async def run():
+        # 定期清理旧数据
+        async def _xray_cleanup_loop():
+            import time
+            while True:
+                await asyncio.sleep(3600)  # 每小时
+                try:
+                    if xray_store:
+                        cutoff = time.time() - (config.xray.retention_hours * 3600)
+                        deleted = await xray_store.cleanup(cutoff)
+                        if deleted > 0:
+                            from loguru import logger
+                            logger.debug(f"X-Ray cleanup: removed {deleted} old events")
+                except Exception as e:
+                    from loguru import logger
+                    logger.warning(f"X-Ray cleanup error: {e}")
+
         try:
             await cron.start()
             await heartbeat.start()
+
+            # 启动 X-Ray 服务器和清理任务
+            xray_tasks = []
+            if xray_server:
+                xray_tasks.append(asyncio.create_task(xray_server.serve()))
+            if xray_store:
+                xray_tasks.append(asyncio.create_task(_xray_cleanup_loop()))
+
             await asyncio.gather(
                 agent.run(),
                 channels.start_all(),
@@ -554,6 +646,12 @@ def gateway(
         except KeyboardInterrupt:
             console.print("\nShutting down...")
         finally:
+            # X-Ray 优雅关闭
+            if xray_server:
+                xray_server.should_exit = True
+            if xray_store:
+                await xray_store.close()
+
             await agent.close_mcp()
             heartbeat.stop()
             cron.stop()
