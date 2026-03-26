@@ -24,6 +24,22 @@ class EventType:
     MEMORY_CONSOLIDATE = "memory_consolidate"
     ERROR = "error"
 
+    # Supervisor Gateway events
+    WORKER_REGISTERED = "worker_registered"
+    WORKER_HEARTBEAT = "worker_heartbeat"
+    WORKER_UNHEALTHY = "worker_unhealthy"
+    WORKER_EVICTED = "worker_evicted"
+    TASK_CREATED = "task_created"
+    TASK_ASSIGNED = "task_assigned"
+    TASK_PROGRESS = "task_progress"
+    TASK_COMPLETED = "task_completed"
+    TASK_FAILED = "task_failed"
+    TASK_CANCELLED = "task_cancelled"
+    PLAN_CREATED = "plan_created"
+    PLAN_APPROVED = "plan_approved"
+    PLAN_COMPLETED = "plan_completed"
+    PLAN_FAILED = "plan_failed"
+
 
 @dataclass
 class XRayEvent:

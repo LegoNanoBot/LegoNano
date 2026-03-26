@@ -1138,5 +1138,135 @@ def _login_github_copilot() -> None:
         raise typer.Exit(1)
 
 
+# ============================================================================
+# Supervisor Command
+# ============================================================================
+
+
+@app.command()
+def supervisor(
+    port: int = typer.Option(9200, "--port", "-p", help="Supervisor API port"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Supervisor API bind address"),
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
+    heartbeat_timeout: float = typer.Option(120.0, "--heartbeat-timeout", help="Worker heartbeat timeout (seconds)"),
+):
+    """Start the supervisor node (control plane for distributed workers)."""
+    from nanobot.supervisor.app import create_supervisor_app
+    from nanobot.supervisor.registry import WorkerRegistry
+    from nanobot.supervisor.watchdog import WatchdogService
+
+    cfg = _load_runtime_config(config, workspace)
+    sync_workspace_templates(cfg.workspace_path)
+
+    console.print(f"{__logo__} Starting supervisor on {host}:{port}...")
+
+    registry = WorkerRegistry(heartbeat_timeout_s=heartbeat_timeout)
+
+    # Optional: set up X-Ray stores for aggregated monitoring
+    xray_kwargs: dict = {}
+    if cfg.xray.enabled:
+        try:
+            from nanobot.xray import XRAY_AVAILABLE
+            if XRAY_AVAILABLE:
+                from nanobot.xray.collector import EventCollector
+                from nanobot.xray.sse import SSEHub
+                from nanobot.xray.store.sqlite import SQLiteEventStore
+
+                db_path = str(cfg.workspace_path / cfg.xray.db_path)
+                xray_store = SQLiteEventStore(db_path)
+                asyncio.get_event_loop().run_until_complete(xray_store.init())
+
+                sse_hub = SSEHub()
+                collector = EventCollector()
+                collector.set_store(xray_store)
+                collector.set_sse_hub(sse_hub)
+
+                xray_kwargs = {
+                    "event_store": xray_store,
+                    "sse_hub": sse_hub,
+                    "collector": collector,
+                    "config_refs": {
+                        "workspace": str(cfg.workspace_path),
+                        "bot_config": cfg,
+                    },
+                }
+                console.print("[green]✓[/green] X-Ray monitoring enabled")
+        except Exception as e:
+            console.print(f"[yellow]X-Ray init failed: {e}[/yellow]")
+
+    supervisor_app = create_supervisor_app(
+        worker_registry=registry,
+        **xray_kwargs,
+    )
+
+    import uvicorn
+
+    uvi_config = uvicorn.Config(
+        supervisor_app,
+        host=host,
+        port=port,
+        log_level="info",
+    )
+    server = uvicorn.Server(uvi_config)
+
+    watchdog = WatchdogService(registry, check_interval_s=30.0)
+
+    async def _run_supervisor():
+        await watchdog.start()
+        try:
+            await server.serve()
+        finally:
+            watchdog.stop()
+            if "event_store" in xray_kwargs:
+                await xray_kwargs["event_store"].close()
+
+    console.print(f"[green]✓[/green] Supervisor API at http://{host}:{port}/api/docs")
+    asyncio.run(_run_supervisor())
+
+
+# ============================================================================
+# Worker Command
+# ============================================================================
+
+
+@app.command()
+def worker(
+    supervisor_url: str = typer.Option("http://127.0.0.1:9200", "--supervisor", "-s", help="Supervisor URL"),
+    name: str = typer.Option("worker", "--name", "-n", help="Worker display name"),
+    worker_id: str | None = typer.Option(None, "--id", help="Worker ID (auto-generated if omitted)"),
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
+    poll_interval: float = typer.Option(3.0, "--poll-interval", help="Task poll interval (seconds)"),
+):
+    """Start a worker node that executes tasks from the supervisor."""
+    from nanobot.worker.runner import WorkerRunner
+
+    cfg = _load_runtime_config(config, workspace)
+    sync_workspace_templates(cfg.workspace_path)
+
+    provider = _make_provider(cfg)
+
+    runner = WorkerRunner(
+        supervisor_url=supervisor_url,
+        worker_id=worker_id,
+        worker_name=name,
+        workspace=cfg.workspace_path,
+        provider=provider,
+        model=cfg.agents.defaults.model,
+        max_iterations=cfg.agents.defaults.max_tool_iterations,
+        poll_interval_s=poll_interval,
+        web_search_config=cfg.tools.web.search,
+        web_proxy=cfg.tools.web.proxy or None,
+        exec_config=cfg.tools.exec,
+        restrict_to_workspace=cfg.tools.restrict_to_workspace,
+    )
+
+    console.print(f"{__logo__} Starting worker '{name}' → {supervisor_url}")
+    console.print(f"[dim]Worker ID: {runner.worker_id}[/dim]")
+
+    asyncio.run(runner.run())
+
+
 if __name__ == "__main__":
     app()
