@@ -477,6 +477,17 @@ class ToolsConfig(Base):
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
+class XRayConfig(Base):
+    """X-Ray debugging service configuration."""
+
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 9100
+    db_path: str = ".nanobot/xray.db"
+    retention_hours: int = 72
+    max_message_size: int = 32768
+
+
 class Config(BaseSettings):
     """Root configuration for nanobot."""
 
@@ -486,6 +497,7 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    xray: XRayConfig = Field(default_factory=XRayConfig)
 
     @property
     def workspace_path(self) -> Path:
