@@ -62,6 +62,7 @@ class BaiLianPluginProvider(LLMProvider):
         max_tokens: int = 4096,
         temperature: float = 0.7,
         reasoning_effort: str | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> LLMResponse:
         payload: dict[str, Any] = {
             "model": self._normalize_model(model or self.default_model),
@@ -74,7 +75,7 @@ class BaiLianPluginProvider(LLMProvider):
         }
         if tools:
             payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+            payload["tool_choice"] = tool_choice or "auto"
 
         merged_extra_body = dict(self.extra_body)
         if reasoning_effort:

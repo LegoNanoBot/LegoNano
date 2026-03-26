@@ -28,9 +28,9 @@ async def dashboard(request: Request):
     recent_runs = await store.get_agent_runs(limit=10)
 
     return templates.TemplateResponse(
+        request,
         "dashboard.html",
-        {
-            "request": request,
+        context={
             "active_runs": active_runs,
             "recent_events": recent_events,
             "token_usage": token_usage,
@@ -54,9 +54,9 @@ async def agents_page(request: Request):
     active_runs = collector.get_active_runs()
 
     return templates.TemplateResponse(
+        request,
         "agents.html",
-        {
-            "request": request,
+        context={
             "runs": runs,
             "active_runs": active_runs,
             "status_filter": status_filter,
@@ -83,9 +83,9 @@ async def agent_detail_page(request: Request, run_id: str):
     events = await store.query_events(run_id=run_id, limit=500)
 
     return templates.TemplateResponse(
+        request,
         "agent_detail.html",
-        {
-            "request": request,
+        context={
             "run_id": run_id,
             "detail": detail,
             "events": events,
@@ -113,9 +113,9 @@ async def messages_page(request: Request, run_id: str):
     detail = await store.get_run_detail(run_id)
 
     return templates.TemplateResponse(
+        request,
         "messages.html",
-        {
-            "request": request,
+        context={
             "run_id": run_id,
             "detail": detail,
             "llm_events": llm_events,
@@ -130,9 +130,9 @@ async def config_page(request: Request):
     templates = request.app.state.templates
 
     return templates.TemplateResponse(
+        request,
         "config.html",
-        {
-            "request": request,
+        context={
             "page": "config",
         },
     )
@@ -160,9 +160,9 @@ async def tokens_page(request: Request):
         })
 
     return templates.TemplateResponse(
+        request,
         "tokens.html",
-        {
-            "request": request,
+        context={
             "token_usage": token_usage,
             "run_tokens": run_tokens,
             "page": "tokens",
