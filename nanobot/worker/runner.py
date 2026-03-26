@@ -42,6 +42,7 @@ class WorkerRunner:
         web_proxy: str | None = None,
         exec_config: Any = None,
         restrict_to_workspace: bool = False,
+        supervisor_client: SupervisorClient | None = None,
     ) -> None:
         self.worker_id = worker_id or f"w-{uuid.uuid4().hex[:8]}"
         self.worker_name = worker_name
@@ -56,7 +57,7 @@ class WorkerRunner:
         self.exec_config = exec_config
         self.restrict_to_workspace = restrict_to_workspace
 
-        self.client = SupervisorClient(supervisor_url, self.worker_id)
+        self.client = supervisor_client or SupervisorClient(supervisor_url, self.worker_id)
         self._running = False
         self._current_task_id: str | None = None
 

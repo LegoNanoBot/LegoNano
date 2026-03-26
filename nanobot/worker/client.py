@@ -13,12 +13,20 @@ class SupervisorClient:
     """HTTP client for worker → supervisor communication.
 
     All methods are async and use httpx for HTTP/1.1 persistent connections.
+    Pass a pre-configured *http_client* (e.g. using ``ASGITransport``) to
+    bypass real network traffic in tests.
     """
 
-    def __init__(self, base_url: str, worker_id: str, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        worker_id: str,
+        timeout: float = 30.0,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.worker_id = worker_id
-        self._client = httpx.AsyncClient(
+        self._client = http_client or httpx.AsyncClient(
             base_url=self.base_url,
             timeout=timeout,
         )
