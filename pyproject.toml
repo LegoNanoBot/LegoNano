@@ -70,6 +70,7 @@ xray = [
 dev = [
     "pytest>=9.0.0,<10.0.0",
     "pytest-asyncio>=1.3.0,<2.0.0",
+    "coverage[toml]>=7.0.0,<8.0.0",
     "ruff>=0.1.0",
     "matrix-nio[e2e]>=0.25.2",
     "mistune>=3.0.0,<4.0.0",
@@ -122,3 +123,15 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["nanobot"]
+omit = [
+    "tests/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 80
