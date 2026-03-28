@@ -370,6 +370,37 @@ async def test_task_failure_propagates(registry, supervisor_client_factory, tmp_
 
 
 @pytest.mark.asyncio
+async def test_task_timeout_propagates(registry, supervisor_client_factory, tmp_path):
+    """A long-running LLM call should time out and mark the task FAILED."""
+
+    task = Task(task_id="task-timeout", instruction="This will hang", timeout_s=0.05)
+    await registry.create_task(task)
+
+    prov = MockProvider(responses=["too slow"])
+
+    async def _slow_chat(messages, tools=None, model=None, **kwargs):
+        await asyncio.sleep(0.2)
+        return LLMResponse(content="too slow")
+
+    prov.chat = _slow_chat  # type: ignore[method-assign]
+    prov.chat_with_retry = _slow_chat  # type: ignore[method-assign]
+
+    client = supervisor_client_factory("w-timeout")
+    runner = _make_runner(
+        worker_id="w-timeout",
+        workspace=tmp_path,
+        provider=prov,
+        supervisor_client=client,
+    )
+    await _run_worker_until_idle(runner)
+
+    t = await registry.get_task("task-timeout")
+    assert t is not None
+    assert t.status == TaskStatus.FAILED
+    assert t.error == "task timed out after 0.05s"
+
+
+@pytest.mark.asyncio
 async def test_plan_fails_when_task_fails(registry, supervisor_client_factory, tmp_path):
     """When a plan step's task fails, the plan itself should be marked FAILED."""
 
@@ -577,6 +608,46 @@ async def test_watchdog_evicts_dead_worker(registry):
     t = await registry.get_task("task-z")
     assert t is not None
     assert t.status == TaskStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_watchdog_fails_stale_task(registry, supervisor_client_factory):
+    """Watchdog background loop detects timed out tasks and marks them FAILED."""
+
+    client = supervisor_client_factory("w-stale")
+    await client.register("stale-worker")
+
+    task = Task(
+        task_id="task-stale",
+        instruction="stale task",
+        timeout_s=0.05,
+        status=TaskStatus.RUNNING,
+        worker_id="w-stale",
+        assigned_at=time.time() - 1.0,
+    )
+    await registry.create_task(task)
+
+    worker = await registry.get_worker("w-stale")
+    assert worker is not None
+    worker.status = "busy"  # type: ignore[assignment]
+    worker.current_task_id = task.task_id
+
+    wd = WatchdogService(registry, check_interval_s=0.05)
+    await wd.start()
+    await asyncio.sleep(0.2)
+    wd.stop()
+
+    updated_task = await registry.get_task("task-stale")
+    assert updated_task is not None
+    assert updated_task.status == TaskStatus.FAILED
+    assert updated_task.error == "task timed out after 0.05s"
+
+    updated_worker = await registry.get_worker("w-stale")
+    assert updated_worker is not None
+    assert updated_worker.status == "online"
+    assert updated_worker.current_task_id is None
+
+    await client.close()
 
 
 # =====================================================================

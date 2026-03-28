@@ -342,6 +342,72 @@ async def test_evict_worker_requeues_tasks(registry, _reg_worker):
 
 
 @pytest.mark.asyncio
+async def test_scan_stale_tasks_marks_failed_and_releases_worker(registry, _reg_worker):
+    import time
+
+    await _reg_worker()
+    task = Task(
+        instruction="test",
+        status=TaskStatus.RUNNING,
+        worker_id="w1",
+        assigned_at=time.time() - 10,
+        timeout_s=1.0,
+    )
+    await registry.create_task(task)
+
+    worker = await registry.get_worker("w1")
+    assert worker is not None
+    worker.status = WorkerStatus.BUSY
+    worker.current_task_id = task.task_id
+
+    stale = await registry.scan_stale_tasks()
+
+    assert len(stale) == 1
+    updated_task = await registry.get_task(task.task_id)
+    assert updated_task is not None
+    assert updated_task.status == TaskStatus.FAILED
+    assert updated_task.error == "task timed out after 1s"
+
+    updated_worker = await registry.get_worker("w1")
+    assert updated_worker is not None
+    assert updated_worker.status == WorkerStatus.ONLINE
+    assert updated_worker.current_task_id is None
+
+
+@pytest.mark.asyncio
+async def test_scan_stale_tasks_fails_plan(registry, _reg_worker):
+    import time
+
+    await _reg_worker()
+    plan = Plan(
+        title="Timeout plan",
+        goal="exercise timeout propagation",
+        steps=[PlanStep(index=0, instruction="step 0")],
+        status=PlanStatus.EXECUTING,
+    )
+    await registry.create_plan(plan)
+
+    task = Task(
+        plan_id=plan.plan_id,
+        step_index=0,
+        instruction="step 0",
+        status=TaskStatus.RUNNING,
+        worker_id="w1",
+        assigned_at=time.time() - 10,
+        timeout_s=1.0,
+    )
+    await registry.create_task(task)
+    plan.steps[0].task_id = task.task_id
+
+    stale = await registry.scan_stale_tasks()
+
+    assert len(stale) == 1
+    updated_plan = await registry.get_plan(plan.plan_id)
+    assert updated_plan is not None
+    assert updated_plan.status == PlanStatus.FAILED
+
+
+@pytest.mark.asyncio
 async def test_registry_emits_worker_events(registry_with_events, event_collector):
     req = WorkerRegisterRequest(worker_id="w1", name="worker-1")
     await registry_with_events.register_worker(req)
@@ -412,6 +478,28 @@ async def test_registry_emits_unhealthy_and_evicted_events(registry_with_events,
     event_types = [e["event_type"] for e in event_collector.events]
     assert SupervisorEventType.WORKER_UNHEALTHY in event_types
     assert SupervisorEventType.WORKER_EVICTED in event_types
+
+
+@pytest.mark.asyncio
+async def test_registry_emits_task_failed_for_stale_task(registry_with_events, event_collector):
+    import time
+
+    await registry_with_events.register_worker(WorkerRegisterRequest(worker_id="w1", name="worker-1"))
+    task = Task(
+        instruction="do work",
+        status=TaskStatus.RUNNING,
+        worker_id="w1",
+        assigned_at=time.time() - 10,
+        timeout_s=1.0,
+    )
+    await registry_with_events.create_task(task)
+
+    await registry_with_events.scan_stale_tasks()
+
+    task_failed_events = [e for e in event_collector.events if e["event_type"] == SupervisorEventType.TASK_FAILED]
+    assert len(task_failed_events) == 1
+    assert task_failed_events[0]["data"]["task_id"] == task.task_id
+    assert task_failed_events[0]["data"]["error"] == "task timed out after 1s"
 
 
 @pytest.mark.asyncio

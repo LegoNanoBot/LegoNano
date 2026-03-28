@@ -1360,11 +1360,12 @@ def _login_github_copilot() -> None:
 
 @app.command()
 def supervisor(
-    port: int = typer.Option(9200, "--port", "-p", help="Supervisor API port"),
-    host: str = typer.Option("127.0.0.1", "--host", help="Supervisor API bind address"),
+    port: int | None = typer.Option(None, "--port", "-p", help="Supervisor API port"),
+    host: str | None = typer.Option(None, "--host", help="Supervisor API bind address"),
     workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
-    heartbeat_timeout: float = typer.Option(120.0, "--heartbeat-timeout", help="Worker heartbeat timeout (seconds)"),
+    heartbeat_timeout: float | None = typer.Option(None, "--heartbeat-timeout", help="Worker heartbeat timeout (seconds)"),
+    watchdog_interval: float | None = typer.Option(None, "--watchdog-interval", help="Watchdog scan interval (seconds)"),
 ):
     """Start the supervisor node (control plane for distributed workers)."""
     from nanobot.supervisor.app import create_supervisor_app
@@ -1374,7 +1375,20 @@ def supervisor(
     cfg = _load_runtime_config(config, workspace)
     sync_workspace_templates(cfg.workspace_path)
 
-    console.print(f"{__logo__} Starting supervisor on {host}:{port}...")
+    resolved_host = host or cfg.supervisor.host
+    resolved_port = port if port is not None else cfg.supervisor.port
+    resolved_heartbeat_timeout = (
+        heartbeat_timeout
+        if heartbeat_timeout is not None
+        else cfg.supervisor.heartbeat_timeout_s
+    )
+    resolved_watchdog_interval = (
+        watchdog_interval
+        if watchdog_interval is not None
+        else cfg.supervisor.watchdog_interval_s
+    )
+
+    console.print(f"{__logo__} Starting supervisor on {resolved_host}:{resolved_port}...")
 
     # Optional: set up X-Ray stores for aggregated monitoring
     xray_kwargs: dict = {}
@@ -1410,7 +1424,9 @@ def supervisor(
             console.print(f"[yellow]X-Ray init failed: {e}[/yellow]")
 
     registry = WorkerRegistry(
-        heartbeat_timeout_s=heartbeat_timeout,
+        heartbeat_timeout_s=resolved_heartbeat_timeout,
+        task_default_timeout_s=cfg.supervisor.task_default_timeout_s,
+        task_default_max_iterations=cfg.supervisor.task_default_max_iterations,
         collector=collector,
     )
 
@@ -1423,13 +1439,13 @@ def supervisor(
 
     uvi_config = uvicorn.Config(
         supervisor_app,
-        host=host,
-        port=port,
+        host=resolved_host,
+        port=resolved_port,
         log_level="info",
     )
     server = uvicorn.Server(uvi_config)
 
-    watchdog = WatchdogService(registry, check_interval_s=30.0)
+    watchdog = WatchdogService(registry, check_interval_s=resolved_watchdog_interval)
 
     async def _run_supervisor():
         await watchdog.start()
@@ -1440,7 +1456,7 @@ def supervisor(
             if "event_store" in xray_kwargs:
                 await xray_kwargs["event_store"].close()
 
-    console.print(f"[green]✓[/green] Supervisor API at http://{host}:{port}/api/docs")
+    console.print(f"[green]✓[/green] Supervisor API at http://{resolved_host}:{resolved_port}/api/docs")
     asyncio.run(_run_supervisor())
 
 

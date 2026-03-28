@@ -498,3 +498,143 @@ def test_gateway_cli_port_overrides_configured_port(monkeypatch, tmp_path: Path)
 
     assert isinstance(result.exception, _StopGateway)
     assert "port 18792" in result.stdout
+
+
+def test_supervisor_uses_configured_defaults(monkeypatch, tmp_path: Path) -> None:
+    config_file = tmp_path / "instance" / "config.json"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text("{}")
+
+    config = Config()
+    config.agents.defaults.workspace = str(tmp_path / "config-workspace")
+    config.supervisor.host = "0.0.0.0"
+    config.supervisor.port = 9301
+    config.supervisor.heartbeat_timeout_s = 45.0
+    config.supervisor.watchdog_interval_s = 11.0
+    config.supervisor.task_default_timeout_s = 222.0
+    config.supervisor.task_default_max_iterations = 17
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr("nanobot.config.loader.set_config_path", lambda _path: None)
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda _path=None: config)
+    monkeypatch.setattr("nanobot.cli.commands.sync_workspace_templates", lambda _path: None)
+
+    class _FakeRegistry:
+        def __init__(self, **kwargs) -> None:
+            seen["registry_kwargs"] = kwargs
+
+    class _FakeWatchdog:
+        def __init__(self, registry, check_interval_s: float) -> None:
+            seen["watchdog_interval"] = check_interval_s
+
+        async def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeUvicornConfig:
+        def __init__(self, app, host: str, port: int, log_level: str) -> None:
+            seen["uvicorn_host"] = host
+            seen["uvicorn_port"] = port
+
+    class _FakeServer:
+        def __init__(self, config) -> None:
+            self.config = config
+
+        async def serve(self) -> None:
+            return None
+
+    monkeypatch.setattr("nanobot.supervisor.registry.WorkerRegistry", _FakeRegistry)
+    monkeypatch.setattr("nanobot.supervisor.watchdog.WatchdogService", _FakeWatchdog)
+    monkeypatch.setattr("nanobot.supervisor.app.create_supervisor_app", lambda **kwargs: object())
+    monkeypatch.setattr("uvicorn.Config", _FakeUvicornConfig)
+    monkeypatch.setattr("uvicorn.Server", _FakeServer)
+
+    result = runner.invoke(app, ["supervisor", "--config", str(config_file)])
+
+    assert result.exit_code == 0
+    assert "Starting supervisor on 0.0.0.0:9301" in result.stdout
+    assert seen["uvicorn_host"] == "0.0.0.0"
+    assert seen["uvicorn_port"] == 9301
+    assert seen["watchdog_interval"] == 11.0
+    assert seen["registry_kwargs"] == {
+        "heartbeat_timeout_s": 45.0,
+        "task_default_timeout_s": 222.0,
+        "task_default_max_iterations": 17,
+        "collector": None,
+    }
+
+
+def test_supervisor_cli_overrides_config_defaults(monkeypatch, tmp_path: Path) -> None:
+    config_file = tmp_path / "instance" / "config.json"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text("{}")
+
+    config = Config()
+    config.agents.defaults.workspace = str(tmp_path / "config-workspace")
+    config.supervisor.host = "127.0.0.1"
+    config.supervisor.port = 9301
+    config.supervisor.heartbeat_timeout_s = 45.0
+    config.supervisor.watchdog_interval_s = 11.0
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr("nanobot.config.loader.set_config_path", lambda _path: None)
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda _path=None: config)
+    monkeypatch.setattr("nanobot.cli.commands.sync_workspace_templates", lambda _path: None)
+
+    class _FakeRegistry:
+        def __init__(self, **kwargs) -> None:
+            seen["registry_kwargs"] = kwargs
+
+    class _FakeWatchdog:
+        def __init__(self, registry, check_interval_s: float) -> None:
+            seen["watchdog_interval"] = check_interval_s
+
+        async def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeUvicornConfig:
+        def __init__(self, app, host: str, port: int, log_level: str) -> None:
+            seen["uvicorn_host"] = host
+            seen["uvicorn_port"] = port
+
+    class _FakeServer:
+        def __init__(self, config) -> None:
+            self.config = config
+
+        async def serve(self) -> None:
+            return None
+
+    monkeypatch.setattr("nanobot.supervisor.registry.WorkerRegistry", _FakeRegistry)
+    monkeypatch.setattr("nanobot.supervisor.watchdog.WatchdogService", _FakeWatchdog)
+    monkeypatch.setattr("nanobot.supervisor.app.create_supervisor_app", lambda **kwargs: object())
+    monkeypatch.setattr("uvicorn.Config", _FakeUvicornConfig)
+    monkeypatch.setattr("uvicorn.Server", _FakeServer)
+
+    result = runner.invoke(
+        app,
+        [
+            "supervisor",
+            "--config",
+            str(config_file),
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "9401",
+            "--heartbeat-timeout",
+            "55",
+            "--watchdog-interval",
+            "13",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Starting supervisor on 0.0.0.0:9401" in result.stdout
+    assert seen["uvicorn_host"] == "0.0.0.0"
+    assert seen["uvicorn_port"] == 9401
+    assert seen["watchdog_interval"] == 13.0
+    assert seen["registry_kwargs"]["heartbeat_timeout_s"] == 55.0

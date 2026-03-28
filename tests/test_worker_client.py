@@ -1,5 +1,6 @@
 """Tests for worker client (against real supervisor API via TestClient)."""
 
+import httpx
 import pytest
 
 pytest.importorskip("fastapi")
@@ -19,6 +20,12 @@ def _make_mock_response(json_data, status_code=200):
     return resp
 
 
+def _make_http_status_error(status_code: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "http://localhost/test")
+    response = httpx.Response(status_code=status_code, request=request)
+    return httpx.HTTPStatusError("boom", request=request, response=response)
+
+
 @pytest.mark.asyncio
 async def test_client_register():
     """Test the client sends well-formed registration request."""
@@ -28,9 +35,10 @@ async def test_client_register():
         "worker": {"worker_id": "w-test", "name": "tester", "status": "online"},
     })
 
-    with patch.object(client._client, "post", AsyncMock(return_value=mock_response)) as mock_post:
+    with patch.object(client._client, "request", AsyncMock(return_value=mock_response)) as mock_request:
         result = await client.register("tester", capabilities=["code"])
-        mock_post.assert_called_once_with(
+        mock_request.assert_called_once_with(
+            "POST",
             "/api/v1/supervisor/workers/register",
             json={
                 "worker_id": "w-test",
@@ -48,9 +56,10 @@ async def test_client_heartbeat():
     client = SupervisorClient("http://localhost:9200", "w-test")
     mock_response = _make_mock_response({"ok": True, "worker": {"status": "online"}})
 
-    with patch.object(client._client, "post", AsyncMock(return_value=mock_response)) as mock_post:
+    with patch.object(client._client, "request", AsyncMock(return_value=mock_response)) as mock_request:
         await client.heartbeat(current_task_id="t1", status="busy")
-        mock_post.assert_called_once_with(
+        mock_request.assert_called_once_with(
+            "POST",
             "/api/v1/supervisor/workers/w-test/heartbeat",
             json={"current_task_id": "t1", "status": "busy"},
         )
@@ -63,7 +72,7 @@ async def test_client_claim_task_none():
     client = SupervisorClient("http://localhost:9200", "w-test")
     mock_response = _make_mock_response({"ok": True, "task": None})
 
-    with patch.object(client._client, "post", AsyncMock(return_value=mock_response)):
+    with patch.object(client._client, "request", AsyncMock(return_value=mock_response)):
         result = await client.claim_task()
         assert result is None
 
@@ -78,7 +87,7 @@ async def test_client_claim_task_found():
         "task": {"task_id": "t1", "instruction": "do stuff"},
     })
 
-    with patch.object(client._client, "post", AsyncMock(return_value=mock_response)):
+    with patch.object(client._client, "request", AsyncMock(return_value=mock_response)):
         result = await client.claim_task()
         assert result is not None
         assert result["task_id"] == "t1"
@@ -91,11 +100,12 @@ async def test_client_report_progress():
     client = SupervisorClient("http://localhost:9200", "w-test")
     mock_response = _make_mock_response({"ok": True})
 
-    with patch.object(client._client, "post", AsyncMock(return_value=mock_response)) as mock_post:
+    with patch.object(client._client, "request", AsyncMock(return_value=mock_response)) as mock_request:
         await client.report_progress("t1", iteration=2, message="halfway")
-        mock_post.assert_called_once()
-        call_args = mock_post.call_args
-        assert call_args[0][0] == "/api/v1/supervisor/tasks/t1/progress"
+        mock_request.assert_called_once()
+        call_args = mock_request.call_args
+        assert call_args[0][0] == "POST"
+        assert call_args[0][1] == "/api/v1/supervisor/tasks/t1/progress"
 
     await client.close()
 
@@ -105,10 +115,10 @@ async def test_client_report_result():
     client = SupervisorClient("http://localhost:9200", "w-test")
     mock_response = _make_mock_response({"ok": True})
 
-    with patch.object(client._client, "post", AsyncMock(return_value=mock_response)) as mock_post:
+    with patch.object(client._client, "request", AsyncMock(return_value=mock_response)) as mock_request:
         await client.report_result("t1", status="completed", result="done")
-        mock_post.assert_called_once()
-        call_args = mock_post.call_args
+        mock_request.assert_called_once()
+        call_args = mock_request.call_args
         assert call_args[1]["json"]["status"] == "completed"
         assert call_args[1]["json"]["result"] == "done"
 
@@ -120,7 +130,69 @@ async def test_client_unregister_graceful():
     """Unregister should not raise even if the supervisor is unreachable."""
     client = SupervisorClient("http://localhost:9200", "w-test")
 
-    with patch.object(client._client, "delete", AsyncMock(side_effect=Exception("connection refused"))):
+    with patch.object(client._client, "request", AsyncMock(side_effect=Exception("connection refused"))):
         await client.unregister()  # Should not raise
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_client_register_retries_transient_request_errors():
+    client = SupervisorClient("http://localhost:9200", "w-test")
+    client._sleep = AsyncMock()
+    mock_response = _make_mock_response({
+        "ok": True,
+        "worker": {"worker_id": "w-test", "name": "tester", "status": "online"},
+    })
+
+    with patch.object(
+        client._client,
+        "request",
+        AsyncMock(side_effect=[httpx.ConnectError("refused"), httpx.ReadError("reset"), mock_response]),
+    ) as mock_request:
+        result = await client.register("tester", capabilities=["code"])
+
+    assert result["ok"] is True
+    assert mock_request.await_count == 3
+    assert client._sleep.await_count == 2
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_client_does_not_retry_non_retryable_http_errors():
+    client = SupervisorClient("http://localhost:9200", "w-test")
+    client._sleep = AsyncMock()
+
+    with patch.object(
+        client._client,
+        "request",
+        AsyncMock(side_effect=_make_http_status_error(404)),
+    ) as mock_request:
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.claim_task()
+
+    assert mock_request.await_count == 1
+    client._sleep.assert_not_awaited()
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_client_retries_retryable_http_errors():
+    client = SupervisorClient("http://localhost:9200", "w-test")
+    client._sleep = AsyncMock()
+    mock_response = _make_mock_response({"ok": True, "task": None})
+
+    with patch.object(
+        client._client,
+        "request",
+        AsyncMock(side_effect=[_make_http_status_error(503), mock_response]),
+    ) as mock_request:
+        result = await client.claim_task()
+
+    assert result is None
+    assert mock_request.await_count == 2
+    assert client._sleep.await_count == 1
 
     await client.close()

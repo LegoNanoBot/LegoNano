@@ -110,6 +110,44 @@ def test_create_task(client):
     assert data["task"]["status"] == "pending"
 
 
+def test_create_task_uses_registry_defaults_when_timeout_and_iterations_omitted():
+    registry = WorkerRegistry(
+        heartbeat_timeout_s=60.0,
+        task_default_timeout_s=321.0,
+        task_default_max_iterations=12,
+    )
+    client = TestClient(create_supervisor_app(worker_registry=registry))
+
+    resp = client.post("/api/v1/supervisor/tasks", json={
+        "instruction": "write tests",
+    })
+
+    assert resp.status_code == 200
+    task = resp.json()["task"]
+    assert task["timeout_s"] == 321.0
+    assert task["max_iterations"] == 12
+
+
+def test_create_task_explicit_values_override_registry_defaults():
+    registry = WorkerRegistry(
+        heartbeat_timeout_s=60.0,
+        task_default_timeout_s=321.0,
+        task_default_max_iterations=12,
+    )
+    client = TestClient(create_supervisor_app(worker_registry=registry))
+
+    resp = client.post("/api/v1/supervisor/tasks", json={
+        "instruction": "write tests",
+        "timeout_s": 45.0,
+        "max_iterations": 7,
+    })
+
+    assert resp.status_code == 200
+    task = resp.json()["task"]
+    assert task["timeout_s"] == 45.0
+    assert task["max_iterations"] == 7
+
+
 def test_claim_task(client):
     client.post("/api/v1/supervisor/workers/register", json={
         "worker_id": "w1", "name": "test",

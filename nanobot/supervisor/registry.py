@@ -38,6 +38,8 @@ class WorkerRegistry:
     def __init__(
         self,
         heartbeat_timeout_s: float = 120.0,
+        task_default_timeout_s: float = 600.0,
+        task_default_max_iterations: int = 30,
         event_sink: "EventSink | None" = None,
         collector: "EventCollector | None" = None,
     ) -> None:
@@ -46,6 +48,8 @@ class WorkerRegistry:
         self._tasks: dict[str, Task] = {}
         self._plans: dict[str, Plan] = {}
         self.heartbeat_timeout_s = heartbeat_timeout_s
+        self.task_default_timeout_s = task_default_timeout_s
+        self.task_default_max_iterations = task_default_max_iterations
         self._event_sink = event_sink or (XRayCollectorEventSink(collector) if collector is not None else None)
 
     async def _emit_event(self, run_id: str, event_type: str, data: dict[str, Any]) -> None:
@@ -405,6 +409,8 @@ class WorkerRegistry:
                         step_index=step.index,
                         instruction=step.instruction,
                         label=step.label or f"Plan {plan_id} step {step.index}",
+                        max_iterations=self.task_default_max_iterations,
+                        timeout_s=self.task_default_timeout_s,
                         origin_channel=plan.origin_channel,
                         origin_chat_id=plan.origin_chat_id,
                         session_key=plan.session_key,
@@ -480,6 +486,67 @@ class WorkerRegistry:
                 data=event_data,
             )
         return unhealthy
+
+    async def scan_stale_tasks(self) -> list[Task]:
+        """Fail tasks whose assigned runtime exceeds their timeout."""
+        now = time.time()
+        stale_tasks: list[Task] = []
+        task_events: list[dict[str, Any]] = []
+        plan_events: list[tuple[str, dict[str, Any]]] = []
+        async with self._lock:
+            for task in self._tasks.values():
+                if task.status not in (TaskStatus.ASSIGNED, TaskStatus.RUNNING):
+                    continue
+
+                started_at = task.assigned_at or task.updated_at or task.created_at
+                if now - started_at <= task.timeout_s:
+                    continue
+
+                task.status = TaskStatus.FAILED
+                task.error = f"task timed out after {task.timeout_s:g}s"
+                task.updated_at = now
+                stale_tasks.append(task)
+                task_events.append({
+                    "task_id": task.task_id,
+                    "worker_id": task.worker_id,
+                    "status": task.status.value,
+                    "error": task.error,
+                    "result_preview": "",
+                    "result_len": 0,
+                })
+
+                if task.worker_id:
+                    worker = self._workers.get(task.worker_id)
+                    if worker and worker.current_task_id == task.task_id:
+                        worker.status = WorkerStatus.ONLINE
+                        worker.current_task_id = None
+
+                if task.plan_id:
+                    plan_event_type = await self._advance_plan_unlocked(task.plan_id)
+                    if plan_event_type is not None:
+                        plan = self._plans.get(task.plan_id)
+                        if plan is not None:
+                            plan_events.append((
+                                plan_event_type,
+                                {
+                                    "plan_id": plan.plan_id,
+                                    "status": plan.status.value,
+                                },
+                            ))
+
+        for event_data in task_events:
+            await self._emit_event(
+                run_id=event_data["task_id"],
+                event_type=SupervisorEventType.TASK_FAILED,
+                data=event_data,
+            )
+        for event_type, payload in plan_events:
+            await self._emit_event(
+                run_id=payload["plan_id"],
+                event_type=event_type,
+                data=payload,
+            )
+        return stale_tasks
 
     async def evict_worker(self, worker_id: str, reason: str | None = None) -> list[Task]:
         """Remove an unhealthy worker and reassign its tasks back to pending."""

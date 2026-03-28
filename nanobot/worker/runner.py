@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import signal
 import time
 import uuid
 from pathlib import Path
@@ -65,13 +64,7 @@ class WorkerRunner:
         """Main loop: register → heartbeat + poll → execute → report."""
         self._running = True
 
-        # Register
-        try:
-            await self.client.register(self.worker_name)
-            logger.info("Worker {} registered with supervisor", self.worker_id)
-        except Exception as e:
-            logger.error("Failed to register with supervisor: {}", e)
-            raise
+        await self._register_until_available()
 
         # Start heartbeat in background
         heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -91,6 +84,22 @@ class WorkerRunner:
 
     async def stop(self) -> None:
         self._running = False
+
+    async def _register_until_available(self) -> None:
+        while self._running:
+            try:
+                await self.client.register(self.worker_name)
+                logger.info("Worker {} registered with supervisor", self.worker_id)
+                return
+            except Exception as e:
+                logger.warning(
+                    "Failed to register with supervisor: {}. Retrying in {}s",
+                    e,
+                    self.poll_interval_s,
+                )
+                await asyncio.sleep(self.poll_interval_s)
+
+        raise RuntimeError("Worker stopped before registration completed")
 
     async def _heartbeat_loop(self) -> None:
         while self._running:
@@ -124,104 +133,21 @@ class WorkerRunner:
         instruction = task_data["instruction"]
         context = task_data.get("context", "")
         max_iter = task_data.get("max_iterations", self.max_iterations)
+        timeout_s = float(task_data.get("timeout_s", 600.0))
 
         self._current_task_id = task_id
         logger.info("Worker {} executing task {}: {}", self.worker_id, task_id, instruction[:60])
 
         try:
-            # Build tools (same as subagent)
-            from nanobot.agent.tools.filesystem import (
-                EditFileTool,
-                ListDirTool,
-                ReadFileTool,
-                WriteFileTool,
+            final_result = await asyncio.wait_for(
+                self._run_task_loop(
+                    instruction=instruction,
+                    context=context,
+                    max_iter=max_iter,
+                    task_id=task_id,
+                ),
+                timeout=timeout_s,
             )
-            from nanobot.agent.tools.registry import ToolRegistry
-            from nanobot.agent.tools.shell import ExecTool
-            from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
-            from nanobot.config.schema import ExecToolConfig, WebSearchConfig
-            from nanobot.utils.helpers import build_assistant_message
-
-            tools = ToolRegistry()
-            allowed_dir = self.workspace if self.restrict_to_workspace else None
-            tools.register(ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            tools.register(WriteFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            tools.register(EditFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            tools.register(ListDirTool(workspace=self.workspace, allowed_dir=allowed_dir))
-
-            exec_cfg = self.exec_config or ExecToolConfig()
-            tools.register(ExecTool(
-                working_dir=str(self.workspace),
-                timeout=exec_cfg.timeout,
-                restrict_to_workspace=self.restrict_to_workspace,
-                path_append=exec_cfg.path_append,
-            ))
-
-            ws_cfg = self.web_search_config or WebSearchConfig()
-            tools.register(WebSearchTool(config=ws_cfg, proxy=self.web_proxy))
-            tools.register(WebFetchTool(proxy=self.web_proxy))
-
-            # Build system prompt
-            system_prompt = self._build_system_prompt(context)
-            messages: list[dict[str, Any]] = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": instruction},
-            ]
-
-            # Run LLM + tool loop
-            iteration = 0
-            final_result: str | None = None
-
-            while iteration < max_iter:
-                iteration += 1
-
-                response = await self.provider.chat_with_retry(
-                    messages=messages,
-                    tools=tools.get_definitions(),
-                    model=self.model,
-                )
-
-                # Report progress
-                try:
-                    progress_msg = ""
-                    if response.content:
-                        progress_msg = response.content[:200]
-                    elif response.has_tool_calls:
-                        tool_names = [tc.name for tc in response.tool_calls]
-                        progress_msg = f"Calling tools: {', '.join(tool_names)}"
-                    await self.client.report_progress(
-                        task_id=task_id,
-                        iteration=iteration,
-                        message=progress_msg,
-                    )
-                except Exception:
-                    pass  # progress reporting is best-effort
-
-                if response.has_tool_calls:
-                    tool_call_dicts = [
-                        tc.to_openai_tool_call() for tc in response.tool_calls
-                    ]
-                    messages.append(build_assistant_message(
-                        response.content or "",
-                        tool_calls=tool_call_dicts,
-                        reasoning_content=response.reasoning_content,
-                        thinking_blocks=response.thinking_blocks,
-                    ))
-
-                    for tool_call in response.tool_calls:
-                        result = await tools.execute(tool_call.name, tool_call.arguments)
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": tool_call.name,
-                            "content": result,
-                        })
-                else:
-                    final_result = response.content
-                    break
-
-            if final_result is None:
-                final_result = "Task completed (max iterations reached without final response)."
 
             # Report success
             await self.client.report_result(
@@ -231,6 +157,17 @@ class WorkerRunner:
             )
             logger.info("Task {} completed successfully", task_id)
 
+        except asyncio.TimeoutError:
+            error_msg = f"task timed out after {timeout_s:g}s"
+            logger.error("Task {} failed: {}", task_id, error_msg)
+            try:
+                await self.client.report_result(
+                    task_id=task_id,
+                    status="failed",
+                    error=error_msg,
+                )
+            except Exception:
+                logger.error("Failed to report task timeout to supervisor")
         except Exception as e:
             error_msg = str(e)
             logger.error("Task {} failed: {}", task_id, error_msg)
@@ -244,6 +181,105 @@ class WorkerRunner:
                 logger.error("Failed to report task failure to supervisor")
         finally:
             self._current_task_id = None
+
+    async def _run_task_loop(
+        self,
+        *,
+        instruction: str,
+        context: str,
+        max_iter: int,
+        task_id: str,
+    ) -> str:
+        from nanobot.agent.tools.filesystem import (
+            EditFileTool,
+            ListDirTool,
+            ReadFileTool,
+            WriteFileTool,
+        )
+        from nanobot.agent.tools.registry import ToolRegistry
+        from nanobot.agent.tools.shell import ExecTool
+        from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
+        from nanobot.config.schema import ExecToolConfig, WebSearchConfig
+        from nanobot.utils.helpers import build_assistant_message
+
+        tools = ToolRegistry()
+        allowed_dir = self.workspace if self.restrict_to_workspace else None
+        tools.register(ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
+        tools.register(WriteFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
+        tools.register(EditFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
+        tools.register(ListDirTool(workspace=self.workspace, allowed_dir=allowed_dir))
+
+        exec_cfg = self.exec_config or ExecToolConfig()
+        tools.register(ExecTool(
+            working_dir=str(self.workspace),
+            timeout=exec_cfg.timeout,
+            restrict_to_workspace=self.restrict_to_workspace,
+            path_append=exec_cfg.path_append,
+        ))
+
+        ws_cfg = self.web_search_config or WebSearchConfig()
+        tools.register(WebSearchTool(config=ws_cfg, proxy=self.web_proxy))
+        tools.register(WebFetchTool(proxy=self.web_proxy))
+
+        system_prompt = self._build_system_prompt(context)
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": instruction},
+        ]
+
+        iteration = 0
+        final_result: str | None = None
+
+        while iteration < max_iter:
+            iteration += 1
+
+            response = await self.provider.chat_with_retry(
+                messages=messages,
+                tools=tools.get_definitions(),
+                model=self.model,
+            )
+
+            try:
+                progress_msg = ""
+                if response.content:
+                    progress_msg = response.content[:200]
+                elif response.has_tool_calls:
+                    tool_names = [tc.name for tc in response.tool_calls]
+                    progress_msg = f"Calling tools: {', '.join(tool_names)}"
+                await self.client.report_progress(
+                    task_id=task_id,
+                    iteration=iteration,
+                    message=progress_msg,
+                )
+            except Exception:
+                pass
+
+            if response.has_tool_calls:
+                tool_call_dicts = [
+                    tc.to_openai_tool_call() for tc in response.tool_calls
+                ]
+                messages.append(build_assistant_message(
+                    response.content or "",
+                    tool_calls=tool_call_dicts,
+                    reasoning_content=response.reasoning_content,
+                    thinking_blocks=response.thinking_blocks,
+                ))
+
+                for tool_call in response.tool_calls:
+                    result = await tools.execute(tool_call.name, tool_call.arguments)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": tool_call.name,
+                        "content": result,
+                    })
+            else:
+                final_result = response.content
+                break
+
+        if final_result is None:
+            return "Task completed (max iterations reached without final response)."
+        return final_result
 
     def _build_system_prompt(self, extra_context: str = "") -> str:
         from nanobot.agent.context import ContextBuilder
