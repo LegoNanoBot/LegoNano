@@ -97,6 +97,8 @@ The repository includes three plugin examples for different extension surfaces:
 
 Path: `examples/channel-plugin-dingtalk-richtext/`
 
+> **Note:** The core `dingtalk` channel now has built-in support for rich text parsing and media (image / voice / video) send & receive. This plugin example is kept as a reference for writing your own channel plugins with custom attachment-download logic.
+
 ```bash
 cd examples/channel-plugin-dingtalk-richtext
 pip install -e .
@@ -620,6 +622,11 @@ Now send a message to the bot from QQ — it should respond!
 
 Uses **Stream Mode** — no public IP required.
 
+Built-in capabilities:
+- **Rich text**: Inbound rich text (`richText`) messages are automatically parsed into plain text. Outbound rich text is supported via `sampleRichText` message key.
+- **Media messages**: Inbound image / voice / video / file attachments are extracted and forwarded as `InboundMessage.media`. Outbound media is uploaded and sent using the appropriate message key (`sampleImageMsg`, `sampleAudio` / `sampleVoice`, `sampleVideo`, `sampleFile`).
+- **Voice recognition**: When a voice message includes recognition text, it is used as the message content automatically.
+
 **1. Create a DingTalk bot**
 - Visit [DingTalk Open Platform](https://open-dev.dingtalk.com/)
 - Create a new app -> Add **Robot** capability
@@ -646,7 +653,18 @@ Uses **Stream Mode** — no public IP required.
 
 > `allowFrom`: Add your staff ID. Use `["*"]` to allow all users.
 
-**3. Run**
+**3. Sending rich text / media via metadata**
+
+Set metadata keys on `OutboundMessage` to control the DingTalk message type:
+
+| Metadata Key | Value | Effect |
+|---|---|---|
+| `dingtalk_rich_text` (or `rich_text`) | list or dict | Sent as `sampleRichText` |
+| `dingtalk_msg_key` + `dingtalk_msg_param` | string + dict | Sent as an arbitrary DingTalk message key |
+
+Media files in `OutboundMessage.media` are uploaded and dispatched automatically based on file extension.
+
+**4. Run**
 
 ```bash
 nanobot gateway
@@ -1399,9 +1417,13 @@ xray:
 |---------|-------------|
 | **Dashboard** | Live view of active agents, queued messages, token stats |
 | **Agent Timeline** | Step-by-step visualization of LLM calls and tool executions |
+| **LLM Thinking Inspector** | View model reasoning — supports `<think>` blocks, `reasoning_content`, and `thinking_blocks` |
+| **System Prompt Viewer** | Inspect the full system prompt (SOUL.md + bootstrap files) sent to the LLM |
 | **Conversation Viewer** | Full LLM message chain with chat-bubble UI |
 | **Config Inspector** | Browse Memory, Soul, Skills, MCP, and Tools at a glance |
 | **Token Analytics** | Per-run and aggregate prompt/completion token tracking |
+| **Unified Run Tracing** | End-to-end event correlation from message_in through agent loop to message_out |
+| **Real-time SSE Stream** | Live event push with automatic stale-connection eviction |
 | **REST API** | 13 endpoints + SSE stream at `/api/v1/` (Swagger docs at `/api/docs`) |
 
 </details>

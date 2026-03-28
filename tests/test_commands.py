@@ -498,3 +498,229 @@ def test_gateway_cli_port_overrides_configured_port(monkeypatch, tmp_path: Path)
 
     assert isinstance(result.exception, _StopGateway)
     assert "port 18792" in result.stdout
+
+
+def test_supervisor_uses_configured_defaults(monkeypatch, tmp_path: Path) -> None:
+    config_file = tmp_path / "instance" / "config.json"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text("{}")
+
+    config = Config()
+    config.agents.defaults.workspace = str(tmp_path / "config-workspace")
+    config.supervisor.host = "0.0.0.0"
+    config.supervisor.port = 9301
+    config.supervisor.heartbeat_timeout_s = 45.0
+    config.supervisor.watchdog_interval_s = 11.0
+    config.supervisor.task_default_timeout_s = 222.0
+    config.supervisor.task_default_max_iterations = 17
+    config.supervisor.db_path = ".nanobot/custom-supervisor.db"
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr("nanobot.config.loader.set_config_path", lambda _path: None)
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda _path=None: config)
+    monkeypatch.setattr("nanobot.cli.commands.sync_workspace_templates", lambda _path: None)
+
+    class _FakeRegistry:
+        def __init__(self, **kwargs) -> None:
+            seen["registry_kwargs"] = kwargs
+
+        async def restore(self) -> None:
+            seen["registry_restore_called"] = True
+
+    class _FakeStore:
+        def __init__(self, db_path: str) -> None:
+            seen["db_path"] = db_path
+            seen["store"] = self
+
+        async def init(self) -> None:
+            seen["store_init_called"] = True
+
+        async def close(self) -> None:
+            seen["store_close_called"] = True
+
+    class _FakeWatchdog:
+        def __init__(self, registry, check_interval_s: float) -> None:
+            seen["watchdog_interval"] = check_interval_s
+
+        async def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeUvicornConfig:
+        def __init__(self, app, host: str, port: int, log_level: str) -> None:
+            seen["uvicorn_host"] = host
+            seen["uvicorn_port"] = port
+
+    class _FakeServer:
+        def __init__(self, config) -> None:
+            self.config = config
+
+        async def serve(self) -> None:
+            return None
+
+    monkeypatch.setattr("nanobot.supervisor.registry.WorkerRegistry", _FakeRegistry)
+    monkeypatch.setattr("nanobot.supervisor.store.SQLiteRegistryStore", _FakeStore)
+    monkeypatch.setattr("nanobot.supervisor.watchdog.WatchdogService", _FakeWatchdog)
+    monkeypatch.setattr("nanobot.supervisor.app.create_supervisor_app", lambda **kwargs: object())
+    monkeypatch.setattr("uvicorn.Config", _FakeUvicornConfig)
+    monkeypatch.setattr("uvicorn.Server", _FakeServer)
+
+    result = runner.invoke(app, ["supervisor", "--config", str(config_file)])
+
+    assert result.exit_code == 0
+    assert "Starting supervisor on 0.0.0.0:9301" in result.stdout
+    assert seen["uvicorn_host"] == "0.0.0.0"
+    assert seen["uvicorn_port"] == 9301
+    assert seen["watchdog_interval"] == 11.0
+    assert seen["db_path"] == str((config.workspace_path / config.supervisor.db_path).resolve())
+    assert seen["store_init_called"] is True
+    assert seen["registry_restore_called"] is True
+    assert seen["store_close_called"] is True
+    assert seen["registry_kwargs"] == {
+        "heartbeat_timeout_s": 45.0,
+        "task_default_timeout_s": 222.0,
+        "task_default_max_iterations": 17,
+        "store": seen["store"],
+        "collector": None,
+    }
+
+
+def test_supervisor_cli_overrides_config_defaults(monkeypatch, tmp_path: Path) -> None:
+    config_file = tmp_path / "instance" / "config.json"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text("{}")
+
+    config = Config()
+    config.agents.defaults.workspace = str(tmp_path / "config-workspace")
+    config.supervisor.host = "127.0.0.1"
+    config.supervisor.port = 9301
+    config.supervisor.heartbeat_timeout_s = 45.0
+    config.supervisor.watchdog_interval_s = 11.0
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr("nanobot.config.loader.set_config_path", lambda _path: None)
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda _path=None: config)
+    monkeypatch.setattr("nanobot.cli.commands.sync_workspace_templates", lambda _path: None)
+
+    class _FakeRegistry:
+        def __init__(self, **kwargs) -> None:
+            seen["registry_kwargs"] = kwargs
+
+        async def restore(self) -> None:
+            seen["registry_restore_called"] = True
+
+    class _FakeStore:
+        def __init__(self, db_path: str) -> None:
+            seen["db_path"] = db_path
+            seen["store"] = self
+
+        async def init(self) -> None:
+            seen["store_init_called"] = True
+
+        async def close(self) -> None:
+            seen["store_close_called"] = True
+
+    class _FakeWatchdog:
+        def __init__(self, registry, check_interval_s: float) -> None:
+            seen["watchdog_interval"] = check_interval_s
+
+        async def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeUvicornConfig:
+        def __init__(self, app, host: str, port: int, log_level: str) -> None:
+            seen["uvicorn_host"] = host
+            seen["uvicorn_port"] = port
+
+    class _FakeServer:
+        def __init__(self, config) -> None:
+            self.config = config
+
+        async def serve(self) -> None:
+            return None
+
+    monkeypatch.setattr("nanobot.supervisor.registry.WorkerRegistry", _FakeRegistry)
+    monkeypatch.setattr("nanobot.supervisor.store.SQLiteRegistryStore", _FakeStore)
+    monkeypatch.setattr("nanobot.supervisor.watchdog.WatchdogService", _FakeWatchdog)
+    monkeypatch.setattr("nanobot.supervisor.app.create_supervisor_app", lambda **kwargs: object())
+    monkeypatch.setattr("uvicorn.Config", _FakeUvicornConfig)
+    monkeypatch.setattr("uvicorn.Server", _FakeServer)
+
+    result = runner.invoke(
+        app,
+        [
+            "supervisor",
+            "--config",
+            str(config_file),
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "9401",
+            "--db",
+            "runtime/supervisor.db",
+            "--heartbeat-timeout",
+            "55",
+            "--watchdog-interval",
+            "13",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Starting supervisor on 0.0.0.0:9401" in result.stdout
+    assert seen["uvicorn_host"] == "0.0.0.0"
+    assert seen["uvicorn_port"] == 9401
+    assert seen["watchdog_interval"] == 13.0
+    assert seen["db_path"] == str((config.workspace_path / "runtime/supervisor.db").resolve())
+    assert seen["store_init_called"] is True
+    assert seen["registry_restore_called"] is True
+    assert seen["store_close_called"] is True
+    assert seen["registry_kwargs"]["heartbeat_timeout_s"] == 55.0
+    assert seen["registry_kwargs"]["store"] == seen["store"]
+
+
+def test_worker_cli_passes_drain_timeout(monkeypatch, tmp_path: Path) -> None:
+    config_file = tmp_path / "instance" / "config.json"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text("{}")
+
+    config = Config()
+    config.agents.defaults.workspace = str(tmp_path / "config-workspace")
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr("nanobot.config.loader.set_config_path", lambda _path: None)
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda _path=None: config)
+    monkeypatch.setattr("nanobot.cli.commands.sync_workspace_templates", lambda _path: None)
+    monkeypatch.setattr("nanobot.cli.commands._make_provider", lambda _cfg: object())
+
+    class _FakeRunner:
+        def __init__(self, **kwargs) -> None:
+            seen["runner_kwargs"] = kwargs
+            self.worker_id = kwargs["worker_id"] or "w-fake"
+
+        async def run(self) -> None:
+            seen["runner_run_called"] = True
+
+    monkeypatch.setattr("nanobot.worker.runner.WorkerRunner", _FakeRunner)
+
+    result = runner.invoke(
+        app,
+        [
+            "worker",
+            "--config",
+            str(config_file),
+            "--drain-timeout",
+            "42",
+            "--poll-interval",
+            "5",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert seen["runner_run_called"] is True
+    assert seen["runner_kwargs"]["drain_timeout_s"] == 42.0
+    assert seen["runner_kwargs"]["poll_interval_s"] == 5.0

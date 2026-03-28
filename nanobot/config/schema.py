@@ -248,6 +248,7 @@ class ChannelPluginConfig(Base):
     """Generic plugin channel configuration."""
 
     enabled: bool = False
+    allow_from: list[str] = Field(default_factory=list)
     task_receipt: TaskReceiptOverride | None = None
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="allow")
 
@@ -485,7 +486,22 @@ class XRayConfig(Base):
     port: int = 9100
     db_path: str = ".nanobot/xray.db"
     retention_hours: int = 72
+    retain_runs: int = 100
     max_message_size: int = 32768
+    capture_full_messages: bool = False
+
+
+class SupervisorConfig(Base):
+    """Supervisor service configuration."""
+
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 9200
+    db_path: str = ".nanobot/supervisor.db"
+    heartbeat_timeout_s: float = 120.0
+    watchdog_interval_s: float = 30.0
+    task_default_timeout_s: float = 600.0
+    task_default_max_iterations: int = 30
 
 
 class Config(BaseSettings):
@@ -498,6 +514,7 @@ class Config(BaseSettings):
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     xray: XRayConfig = Field(default_factory=XRayConfig)
+    supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
 
     @property
     def workspace_path(self) -> Path:

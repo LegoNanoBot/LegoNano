@@ -8,7 +8,6 @@ them unhealthy, and re-queues their assigned tasks.
 from __future__ import annotations
 
 import asyncio
-
 from loguru import logger
 
 from nanobot.supervisor.registry import WorkerRegistry
@@ -49,7 +48,14 @@ class WatchdogService:
                 logger.error("Watchdog error: {}", e)
 
     async def _check(self) -> None:
-        """Scan for unhealthy workers and evict them."""
+        """Scan for unhealthy workers and timed out tasks."""
+        stale_tasks = await self.registry.scan_stale_tasks()
+        for task in stale_tasks:
+            logger.warning(
+                "Task {} exceeded timeout — marked failed",
+                task.task_id,
+            )
+
         unhealthy = await self.registry.scan_unhealthy_workers()
         for worker in unhealthy:
             logger.warning(
@@ -57,7 +63,10 @@ class WatchdogService:
                 worker.worker_id,
                 worker.name,
             )
-            reassigned = await self.registry.evict_worker(worker.worker_id)
+            reassigned = await self.registry.evict_worker(
+                worker.worker_id,
+                reason="heartbeat_timeout",
+            )
             if reassigned:
                 logger.info(
                     "Re-queued {} tasks from evicted worker {}",

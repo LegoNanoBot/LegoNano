@@ -17,12 +17,36 @@ from nanobot.supervisor.models import (
     WorkerRegisterRequest,
     WorkerStatus,
 )
+from nanobot.supervisor.event_sink import SupervisorEventType
 from nanobot.supervisor.registry import WorkerRegistry
+from nanobot.supervisor.watchdog import WatchdogService
+
+
+class _FakeEventSink:
+    def __init__(self):
+        self.events = []
+
+    async def emit(self, run_id, event_type, data):
+        self.events.append({
+            "run_id": run_id,
+            "event_type": event_type,
+            "data": data,
+        })
 
 
 @pytest.fixture
 def registry():
     return WorkerRegistry(heartbeat_timeout_s=5.0)
+
+
+@pytest.fixture
+def event_collector():
+    return _FakeEventSink()
+
+
+@pytest.fixture
+def registry_with_events(event_collector):
+    return WorkerRegistry(heartbeat_timeout_s=5.0, event_sink=event_collector)
 
 
 @pytest.fixture
@@ -167,6 +191,130 @@ async def test_report_result(registry, _reg_worker):
     w = await registry.get_worker("w1")
     assert w.status == WorkerStatus.ONLINE
     assert w.current_task_id is None
+
+
+@pytest.mark.asyncio
+async def test_report_failed_result_requeues_task_with_retry(registry, _reg_worker):
+    await _reg_worker()
+    task = Task(instruction="do work", max_retries=2)
+    await registry.create_task(task)
+    await registry.claim_task(TaskClaimRequest(worker_id="w1"))
+
+    updated = await registry.report_result(
+        TaskResultReport(
+            task_id=task.task_id,
+            worker_id="w1",
+            status=TaskStatus.FAILED,
+            error="transient",
+        )
+    )
+
+    assert updated is not None
+    assert updated.status == TaskStatus.PENDING
+    assert updated.retry_count == 1
+    assert updated.worker_id is None
+    assert updated.last_failed_worker_id == "w1"
+
+    w = await registry.get_worker("w1")
+    assert w is not None
+    assert w.status == WorkerStatus.ONLINE
+    assert w.current_task_id is None
+
+
+@pytest.mark.asyncio
+async def test_retry_prefers_different_worker_when_available(registry):
+    await registry.register_worker(WorkerRegisterRequest(worker_id="w1", name="worker-1"))
+    await registry.register_worker(WorkerRegisterRequest(worker_id="w2", name="worker-2"))
+    task = Task(instruction="do work", max_retries=2)
+    await registry.create_task(task)
+
+    claimed = await registry.claim_task(TaskClaimRequest(worker_id="w1"))
+    assert claimed is not None
+
+    await registry.report_result(
+        TaskResultReport(
+            task_id=task.task_id,
+            worker_id="w1",
+            status=TaskStatus.FAILED,
+            error="transient",
+        )
+    )
+
+    same_worker_claim = await registry.claim_task(TaskClaimRequest(worker_id="w1"))
+    assert same_worker_claim is None
+
+    other_worker_claim = await registry.claim_task(TaskClaimRequest(worker_id="w2"))
+    assert other_worker_claim is not None
+    assert other_worker_claim.task_id == task.task_id
+    assert other_worker_claim.worker_id == "w2"
+
+
+@pytest.mark.asyncio
+async def test_retry_falls_back_to_same_worker_when_no_alternative(registry, _reg_worker):
+    await _reg_worker()
+    task = Task(instruction="do work", max_retries=1)
+    await registry.create_task(task)
+    await registry.claim_task(TaskClaimRequest(worker_id="w1"))
+
+    await registry.report_result(
+        TaskResultReport(
+            task_id=task.task_id,
+            worker_id="w1",
+            status=TaskStatus.FAILED,
+            error="transient",
+        )
+    )
+
+    reclaimed = await registry.claim_task(TaskClaimRequest(worker_id="w1"))
+    assert reclaimed is not None
+    assert reclaimed.task_id == task.task_id
+
+
+@pytest.mark.asyncio
+async def test_plan_step_max_retries_propagates_to_created_task(registry):
+    plan = Plan(
+        title="Retry plan",
+        goal="propagate retries",
+        steps=[PlanStep(index=0, instruction="step 0", max_retries=3)],
+    )
+    await registry.create_plan(plan)
+
+    approved = await registry.approve_plan(plan.plan_id)
+    assert approved is not None
+    task = await registry.get_task(approved.steps[0].task_id)
+    assert task is not None
+    assert task.max_retries == 3
+
+
+@pytest.mark.asyncio
+async def test_scan_stale_tasks_requeues_when_retry_budget_remaining(registry, _reg_worker):
+    import time
+
+    await _reg_worker()
+    task = Task(
+        instruction="test",
+        status=TaskStatus.RUNNING,
+        worker_id="w1",
+        assigned_at=time.time() - 10,
+        timeout_s=1.0,
+        max_retries=1,
+    )
+    await registry.create_task(task)
+
+    worker = await registry.get_worker("w1")
+    assert worker is not None
+    worker.status = WorkerStatus.BUSY
+    worker.current_task_id = task.task_id
+
+    stale = await registry.scan_stale_tasks()
+
+    assert len(stale) == 1
+    updated_task = await registry.get_task(task.task_id)
+    assert updated_task is not None
+    assert updated_task.status == TaskStatus.PENDING
+    assert updated_task.retry_count == 1
+    assert updated_task.worker_id is None
+    assert updated_task.last_failed_worker_id == "w1"
 
 
 @pytest.mark.asyncio
@@ -315,3 +463,255 @@ async def test_evict_worker_requeues_tasks(registry, _reg_worker):
     # Worker should be gone
     w = await registry.get_worker("w1")
     assert w is None
+
+
+@pytest.mark.asyncio
+async def test_scan_stale_tasks_marks_failed_and_releases_worker(registry, _reg_worker):
+    import time
+
+    await _reg_worker()
+    task = Task(
+        instruction="test",
+        status=TaskStatus.RUNNING,
+        worker_id="w1",
+        assigned_at=time.time() - 10,
+        timeout_s=1.0,
+    )
+    await registry.create_task(task)
+
+    worker = await registry.get_worker("w1")
+    assert worker is not None
+    worker.status = WorkerStatus.BUSY
+    worker.current_task_id = task.task_id
+
+    stale = await registry.scan_stale_tasks()
+
+    assert len(stale) == 1
+    updated_task = await registry.get_task(task.task_id)
+    assert updated_task is not None
+    assert updated_task.status == TaskStatus.FAILED
+    assert updated_task.error == "task timed out after 1s"
+
+    updated_worker = await registry.get_worker("w1")
+    assert updated_worker is not None
+    assert updated_worker.status == WorkerStatus.ONLINE
+    assert updated_worker.current_task_id is None
+
+
+@pytest.mark.asyncio
+async def test_scan_stale_tasks_fails_plan(registry, _reg_worker):
+    import time
+
+    await _reg_worker()
+    plan = Plan(
+        title="Timeout plan",
+        goal="exercise timeout propagation",
+        steps=[PlanStep(index=0, instruction="step 0")],
+        status=PlanStatus.EXECUTING,
+    )
+    await registry.create_plan(plan)
+
+    task = Task(
+        plan_id=plan.plan_id,
+        step_index=0,
+        instruction="step 0",
+        status=TaskStatus.RUNNING,
+        worker_id="w1",
+        assigned_at=time.time() - 10,
+        timeout_s=1.0,
+    )
+    await registry.create_task(task)
+    plan.steps[0].task_id = task.task_id
+
+    stale = await registry.scan_stale_tasks()
+
+    assert len(stale) == 1
+    updated_plan = await registry.get_plan(plan.plan_id)
+    assert updated_plan is not None
+    assert updated_plan.status == PlanStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_registry_restore_requeues_inflight_tasks(tmp_path):
+    pytest.importorskip("aiosqlite")
+
+    from nanobot.supervisor.store import SQLiteRegistryStore
+
+    db_path = tmp_path / "supervisor.db"
+
+    store = SQLiteRegistryStore(str(db_path))
+    await store.init()
+    registry = WorkerRegistry(heartbeat_timeout_s=5.0, store=store)
+
+    await registry.register_worker(WorkerRegisterRequest(worker_id="w1", name="worker-1"))
+    plan = Plan(
+        title="Persistent plan",
+        goal="survive restart",
+        steps=[PlanStep(index=0, instruction="step 0")],
+    )
+    await registry.create_plan(plan)
+    await registry.approve_plan(plan.plan_id)
+
+    claimed = await registry.claim_task(TaskClaimRequest(worker_id="w1"))
+    assert claimed is not None
+    await registry.report_progress(
+        TaskProgressReport(
+            task_id=claimed.task_id,
+            worker_id="w1",
+            iteration=1,
+            message="working",
+        )
+    )
+    await store.close()
+
+    restored_store = SQLiteRegistryStore(str(db_path))
+    await restored_store.init()
+    restored_registry = WorkerRegistry(heartbeat_timeout_s=5.0, store=restored_store)
+    await restored_registry.restore()
+
+    restored_task = await restored_registry.get_task(claimed.task_id)
+    assert restored_task is not None
+    assert restored_task.status == TaskStatus.PENDING
+    assert restored_task.worker_id is None
+    assert restored_task.progress[0].message == "working"
+
+    restored_worker = await restored_registry.get_worker("w1")
+    assert restored_worker is not None
+    assert restored_worker.status == WorkerStatus.OFFLINE
+    assert restored_worker.current_task_id is None
+
+    restored_plan = await restored_registry.get_plan(plan.plan_id)
+    assert restored_plan is not None
+    assert restored_plan.status == PlanStatus.EXECUTING
+    assert restored_plan.steps[0].task_id == claimed.task_id
+
+    await restored_store.close()
+
+
+@pytest.mark.asyncio
+async def test_registry_emits_worker_events(registry_with_events, event_collector):
+    req = WorkerRegisterRequest(worker_id="w1", name="worker-1")
+    await registry_with_events.register_worker(req)
+    await registry_with_events.heartbeat(HeartbeatRequest(worker_id="w1", status=WorkerStatus.BUSY))
+
+    assert len(event_collector.events) == 2
+    assert event_collector.events[0]["event_type"] == SupervisorEventType.WORKER_REGISTERED
+    assert event_collector.events[0]["data"]["worker_id"] == "w1"
+    assert event_collector.events[1]["event_type"] == SupervisorEventType.WORKER_HEARTBEAT
+    assert event_collector.events[1]["data"]["status"] == WorkerStatus.BUSY.value
+
+
+@pytest.mark.asyncio
+async def test_registry_emits_task_events(registry_with_events, event_collector):
+    await registry_with_events.register_worker(WorkerRegisterRequest(worker_id="w1", name="worker-1"))
+    task = Task(instruction="do work")
+    await registry_with_events.create_task(task)
+
+    claimed = await registry_with_events.claim_task(TaskClaimRequest(worker_id="w1"))
+    assert claimed is not None
+
+    await registry_with_events.report_progress(
+        TaskProgressReport(task_id=task.task_id, worker_id="w1", iteration=1, message="halfway"),
+    )
+    await registry_with_events.report_result(
+        TaskResultReport(task_id=task.task_id, worker_id="w1", status=TaskStatus.COMPLETED, result="done"),
+    )
+
+    event_types = [e["event_type"] for e in event_collector.events]
+    assert SupervisorEventType.TASK_CREATED in event_types
+    assert SupervisorEventType.TASK_ASSIGNED in event_types
+    assert SupervisorEventType.TASK_PROGRESS in event_types
+    assert SupervisorEventType.TASK_COMPLETED in event_types
+
+
+@pytest.mark.asyncio
+async def test_registry_emits_task_retried_event(registry_with_events, event_collector):
+    await registry_with_events.register_worker(WorkerRegisterRequest(worker_id="w1", name="worker-1"))
+    task = Task(instruction="do work", max_retries=1)
+    await registry_with_events.create_task(task)
+    await registry_with_events.claim_task(TaskClaimRequest(worker_id="w1"))
+
+    await registry_with_events.report_result(
+        TaskResultReport(task_id=task.task_id, worker_id="w1", status=TaskStatus.FAILED, error="transient"),
+    )
+
+    event_types = [e["event_type"] for e in event_collector.events]
+    assert SupervisorEventType.TASK_RETRIED in event_types
+
+
+@pytest.mark.asyncio
+async def test_registry_emits_plan_events(registry_with_events, event_collector):
+    await registry_with_events.register_worker(WorkerRegisterRequest(worker_id="w1", name="worker-1"))
+    steps = [PlanStep(index=0, instruction="step 0")]
+    plan = Plan(title="Test", goal="test", steps=steps)
+    await registry_with_events.create_plan(plan)
+    await registry_with_events.approve_plan(plan.plan_id)
+
+    claimed = await registry_with_events.claim_task(TaskClaimRequest(worker_id="w1"))
+    assert claimed is not None
+    await registry_with_events.report_result(
+        TaskResultReport(task_id=claimed.task_id, worker_id="w1", status=TaskStatus.COMPLETED, result="ok"),
+    )
+
+    event_types = [e["event_type"] for e in event_collector.events]
+    assert SupervisorEventType.PLAN_CREATED in event_types
+    assert SupervisorEventType.PLAN_APPROVED in event_types
+    assert SupervisorEventType.PLAN_COMPLETED in event_types
+
+
+@pytest.mark.asyncio
+async def test_registry_emits_unhealthy_and_evicted_events(registry_with_events, event_collector):
+    await registry_with_events.register_worker(WorkerRegisterRequest(worker_id="w1", name="worker-1"))
+
+    worker = await registry_with_events.get_worker("w1")
+    assert worker is not None
+    worker.last_heartbeat -= 999
+
+    unhealthy = await registry_with_events.scan_unhealthy_workers()
+    assert len(unhealthy) == 1
+    await registry_with_events.evict_worker("w1")
+
+    event_types = [e["event_type"] for e in event_collector.events]
+    assert SupervisorEventType.WORKER_UNHEALTHY in event_types
+    assert SupervisorEventType.WORKER_EVICTED in event_types
+
+
+@pytest.mark.asyncio
+async def test_registry_emits_task_failed_for_stale_task(registry_with_events, event_collector):
+    import time
+
+    await registry_with_events.register_worker(WorkerRegisterRequest(worker_id="w1", name="worker-1"))
+    task = Task(
+        instruction="do work",
+        status=TaskStatus.RUNNING,
+        worker_id="w1",
+        assigned_at=time.time() - 10,
+        timeout_s=1.0,
+    )
+    await registry_with_events.create_task(task)
+
+    await registry_with_events.scan_stale_tasks()
+
+    task_failed_events = [e for e in event_collector.events if e["event_type"] == SupervisorEventType.TASK_FAILED]
+    assert len(task_failed_events) == 1
+    assert task_failed_events[0]["data"]["task_id"] == task.task_id
+    assert task_failed_events[0]["data"]["error"] == "task timed out after 1s"
+
+
+@pytest.mark.asyncio
+async def test_watchdog_emits_worker_evicted_event(event_collector):
+    registry = WorkerRegistry(heartbeat_timeout_s=0.01, event_sink=event_collector)
+    await registry.register_worker(WorkerRegisterRequest(worker_id="w1", name="worker-1"))
+
+    worker = await registry.get_worker("w1")
+    assert worker is not None
+    worker.last_heartbeat -= 999
+
+    watchdog = WatchdogService(registry, check_interval_s=0.01)
+    await watchdog.start()
+    await asyncio.sleep(0.05)
+    watchdog.stop()
+
+    evicted_events = [e for e in event_collector.events if e["event_type"] == SupervisorEventType.WORKER_EVICTED]
+    assert len(evicted_events) == 1
+    assert evicted_events[0]["data"]["reason"] == "heartbeat_timeout"

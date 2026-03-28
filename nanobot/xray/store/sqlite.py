@@ -33,13 +33,14 @@ _CREATE_INDEXES_SQL = [
 class SQLiteEventStore(BaseEventStore):
     """SQLite-backed implementation of X-Ray event store."""
 
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, max_runs: int = 100) -> None:
         """Initialize the SQLite event store.
 
         Args:
             db_path: Path to the SQLite database file.
         """
         self._db_path = db_path
+        self._max_runs = max_runs
         self._db: aiosqlite.Connection | None = None
 
     async def init(self) -> None:
@@ -79,6 +80,7 @@ class SQLiteEventStore(BaseEventStore):
             "INSERT INTO events (id, timestamp, run_id, event_type, data) VALUES (?, ?, ?, ?, ?)",
             (event.id, event.timestamp, event.run_id, event.event_type, data_json),
         )
+        await self._cleanup_excess_runs()
         await self._db.commit()
         logger.trace("Saved event {} (type={})", event.id, event.event_type)
 
@@ -104,8 +106,36 @@ class SQLiteEventStore(BaseEventStore):
             "INSERT INTO events (id, timestamp, run_id, event_type, data) VALUES (?, ?, ?, ?, ?)",
             rows,
         )
+        await self._cleanup_excess_runs()
         await self._db.commit()
         logger.debug("Batch saved {} events", len(events))
+
+    async def _cleanup_excess_runs(self) -> None:
+        """Keep only recent runs by newest event timestamp."""
+        if self._db is None or self._max_runs <= 0:
+            return
+
+        async with self._db.execute(
+            """
+            SELECT run_id
+            FROM events
+            GROUP BY run_id
+            ORDER BY MAX(timestamp) DESC
+            LIMIT -1 OFFSET ?
+            """,
+            (self._max_runs,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        if not rows:
+            return
+
+        stale_run_ids = [row["run_id"] for row in rows]
+        placeholders = ",".join("?" for _ in stale_run_ids)
+        await self._db.execute(
+            f"DELETE FROM events WHERE run_id IN ({placeholders})",
+            stale_run_ids,
+        )
 
     async def query_events(
         self,
@@ -162,7 +192,16 @@ class SQLiteEventStore(BaseEventStore):
         if self._db is None:
             raise RuntimeError("Database not initialized. Call init() first.")
 
-        query = """
+        # Build status filter in SQL to avoid post-LIMIT filtering bug.
+        # "active" = no matching agent_end event, "completed" = has one.
+        if status == "active":
+            status_clause = "AND e.timestamp IS NULL"
+        elif status == "completed":
+            status_clause = "AND e.timestamp IS NOT NULL"
+        else:
+            status_clause = ""
+
+        query = f"""
             SELECT
                 s.run_id,
                 s.timestamp AS started_at,
@@ -172,6 +211,7 @@ class SQLiteEventStore(BaseEventStore):
             FROM events s
             LEFT JOIN events e ON s.run_id = e.run_id AND e.event_type = ?
             WHERE s.event_type = ?
+            {status_clause}
             ORDER BY s.timestamp DESC
             LIMIT ?
         """
@@ -185,10 +225,6 @@ class SQLiteEventStore(BaseEventStore):
         for row in rows:
             run_status = "completed" if row["ended_at"] is not None else "active"
 
-            # Apply status filter if specified
-            if status is not None and run_status != status:
-                continue
-
             start_data = json.loads(row["start_data"]) if row["start_data"] else {}
             end_data = json.loads(row["end_data"]) if row["end_data"] else {}
 
@@ -199,11 +235,11 @@ class SQLiteEventStore(BaseEventStore):
             results.append(
                 {
                     "run_id": row["run_id"],
-                    "started_at": row["started_at"],
-                    "ended_at": row["ended_at"],
+                    "start_time": row["started_at"],
+                    "end_time": row["ended_at"],
                     "status": run_status,
                     "channel": start_data.get("channel"),
-                    "duration_s": duration_s,
+                    "duration": duration_s,
                     "start_data": start_data,
                     "end_data": end_data,
                 }
@@ -244,13 +280,6 @@ class SQLiteEventStore(BaseEventStore):
 
         # Count LLM responses and sum tokens
         async with self._db.execute(
-            "SELECT COUNT(*) as cnt, data FROM events WHERE run_id = ? AND event_type = ?",
-            (run_id, EventType.LLM_RESPONSE),
-        ) as cursor:
-            llm_rows = await cursor.fetchall()
-
-        # Get all LLM response events for token counting
-        async with self._db.execute(
             "SELECT data FROM events WHERE run_id = ? AND event_type = ?",
             (run_id, EventType.LLM_RESPONSE),
         ) as cursor:
@@ -279,10 +308,10 @@ class SQLiteEventStore(BaseEventStore):
 
         return {
             "run_id": run_id,
-            "started_at": started_at,
-            "ended_at": ended_at,
+            "start_time": started_at,
+            "end_time": ended_at,
             "status": run_status,
-            "duration_s": duration_s,
+            "duration": duration_s,
             "channel": start_data.get("channel"),
             "start_data": start_data,
             "end_data": end_data,

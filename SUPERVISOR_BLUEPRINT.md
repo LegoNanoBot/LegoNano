@@ -1,15 +1,14 @@
-# Supervisor Gateway — 递进式实现蓝图
+# Supervisor Gateway — 活跃蓝图
 
-> **当前状态**：Phase 0（MVP 验证）已完成并合并到 `feature/xray-monitoring` 分支。  
+> **当前状态**：Phase 0 与 Phase 1 已完成并归档；本文件仅保留未完成阶段的活跃规划。  
 > **设计原则**：每个 Phase 可独立交付、独立测试、独立回滚。后续 Phase 依赖前置 Phase 但不破坏已有功能。
 
 ---
 
 ## 目录
 
+- [文档导航](#文档导航)
 - [架构全景](#架构全景)
-- [Phase 0 — MVP 验证（✅ 已完成）](#phase-0--mvp-验证-已完成)
-- [Phase 1 — 生产加固](#phase-1--生产加固)
 - [Phase 2 — 状态持久化与崩溃恢复](#phase-2--状态持久化与崩溃恢复)
 - [Phase 3 — 通道集成（双向桥接）](#phase-3--通道集成双向桥接)
 - [Phase 4 — Agent Loop 集成](#phase-4--agent-loop-集成)
@@ -20,7 +19,26 @@
 - [Phase 9 — 可观测性仪表盘](#phase-9--可观测性仪表盘)
 - [Phase 10 — 水平扩展与高可用](#phase-10--水平扩展与高可用)
 - [实现优先级矩阵](#实现优先级矩阵)
-- [附录：当前代码清单](#附录当前代码清单)
+
+---
+
+## 文档导航
+
+- 活跃规划：当前文件
+- 文档索引：[docs/supervisor/README.md](docs/supervisor/README.md)
+- 已完成归档：
+  - [Phase 0 Release Note](docs/supervisor/release-notes/phase-0-mvp.md)
+  - [Phase 1 Release Note](docs/supervisor/release-notes/phase-1-production-hardening.md)
+
+## 已完成阶段摘要
+
+### Phase 0 — MVP 验证
+
+- 已完成，详细交付与历史快照见 [docs/supervisor/release-notes/phase-0-mvp.md](docs/supervisor/release-notes/phase-0-mvp.md)
+
+### Phase 1 — 生产加固
+
+- 已完成，详细交付与测试结果见 [docs/supervisor/release-notes/phase-1-production-hardening.md](docs/supervisor/release-notes/phase-1-production-hardening.md)
 
 ---
 
@@ -28,7 +46,7 @@
 
 最终目标的系统架构：
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────────┐
 │                         Supervisor Gateway                          │
 │                                                                      │
@@ -57,154 +75,6 @@
 
 ---
 
-## Phase 0 — MVP 验证（✅ 已完成）
-
-**目标**：最小可行产品，验证核心架构可跑通。
-
-**已交付内容**：
-
-| 模块 | 文件 | 行数 | 状态 |
-|------|------|------|------|
-| 数据模型 | `nanobot/supervisor/models.py` | ~192 | ✅ |
-| 注册表 | `nanobot/supervisor/registry.py` | ~350 | ✅ |
-| 计划器 | `nanobot/supervisor/planner.py` | ~130 | ✅ |
-| 看门狗 | `nanobot/supervisor/watchdog.py` | ~70 | ✅ |
-| FastAPI 应用 | `nanobot/supervisor/app.py` | ~90 | ✅ |
-| API: Workers | `nanobot/supervisor/api/workers.py` | ~115 | ✅ |
-| API: Tasks | `nanobot/supervisor/api/tasks.py` | ~200 | ✅ |
-| API: Plans | `nanobot/supervisor/api/plans.py` | ~130 | ✅ |
-| Worker 客户端 | `nanobot/worker/client.py` | ~130 | ✅ |
-| Worker 运行器 | `nanobot/worker/runner.py` | ~350 | ✅ |
-| CLI 命令 | `nanobot/cli/commands.py` | +135 | ✅ |
-| X-Ray 事件类型 | `nanobot/xray/events.py` | +14 常量 | ✅ |
-
-**测试**：58 单元测试 + 13 集成测试 = 71 新测试，全套 441 通过。
-
-**设计决策**：
-- 内存态注册表（dict + asyncio.Lock）
-- FIFO 任务队列
-- Worker 主动 poll 模式
-- DAG 依赖跟踪
-- 任务失败 → 整个计划失败
-- httpx.ASGITransport 进程内集成测试
-
-**已知限制**（后续 Phase 解决）：
-- ❌ X-Ray 事件只定义未发射
-- ❌ 任务超时字段定义但未强制执行
-- ❌ 注册表纯内存，重启即丢
-- ❌ 无通道回传（任务结果不回用户）
-- ❌ 无认证机制
-- ❌ planner 无单元测试
-- ❌ 无配置 schema（全靠 CLI 参数）
-- ❌ Worker 无重连/断线恢复
-
----
-
-## Phase 1 — 生产加固
-
-**目标**：让 MVP 在真实环境中可靠运行，填补监控盲区与安全边界。
-
-**前置依赖**：Phase 0 ✅
-
-### Task 1.1 — X-Ray 事件发射
-
-**问题**：14 个事件类型已定义在 `xray/events.py`，但 registry/watchdog 中无发射代码，监控系统对 supervisor 完全失明。
-
-**实现**：
-- [ ] `registry.py` 接受可选 `collector: XRayCollector` 参数
-- [ ] 在以下位置发射事件：
-  - `register_worker()` → `WORKER_REGISTERED`
-  - `heartbeat()` → `WORKER_HEARTBEAT`
-  - `scan_unhealthy_workers()` → `WORKER_UNHEALTHY`
-  - `evict_worker()` → `WORKER_EVICTED`
-  - `create_task()` → `TASK_CREATED`
-  - `claim_task()` → `TASK_ASSIGNED`
-  - `report_progress()` → `TASK_PROGRESS`
-  - `report_result(success)` → `TASK_COMPLETED`
-  - `report_result(failure)` → `TASK_FAILED`
-  - `cancel_task()` → `TASK_CANCELLED`
-  - `create_plan()` → `PLAN_CREATED`
-  - `approve_plan()` → `PLAN_APPROVED`
-  - `_advance_plan(completed)` → `PLAN_COMPLETED`
-  - `_advance_plan(failed)` → `PLAN_FAILED`
-- [ ] `watchdog.py` 中发射 `WORKER_EVICTED` 事件
-- [ ] 测试：验证事件发射数量与 payload 正确性
-
-**验收标准**：启动 supervisor + X-Ray 后，仪表盘可实时显示 worker 注册、任务流转、计划推进。
-
----
-
-### Task 1.2 — 任务超时强制执行
-
-**问题**：`Task.timeout_s` 和 `Task.max_iterations` 已定义但未强制。Worker 挂死时任务永不结束。
-
-**实现**：
-- [ ] `WorkerRunner._execute_task()` 中添加 `asyncio.wait_for(timeout=task.timeout_s)` 包装
-- [ ] 超时触发：报告 FAILED + 错误信息 "task timed out after {n}s"
-- [ ] `registry.py` 添加 `scan_stale_tasks()` 方法：扫描 `RUNNING` 超过 `timeout_s` 的任务，强制标记 FAILED
-- [ ] Watchdog 扩展：除了检查 worker 心跳，也检查 stale tasks
-- [ ] 测试：模拟长时间 LLM 调用，验证超时触发与任务状态变更
-
-**验收标准**：任务执行超过 `timeout_s` 后自动标记失败并释放 worker。
-
----
-
-### Task 1.3 — Planner 单元测试
-
-**问题**：`planner.py` 完全未测试，LLM 返回格式不可控时可能静默失败。
-
-**实现**：
-- [ ] 使用 MockProvider 测试以下场景：
-  - 简单请求 → planner 返回 None（走单任务路径）
-  - 复杂请求 → planner 返回多步骤 Plan
-  - LLM 返回无效 JSON → 优雅降级
-  - LLM 返回 markdown 代码栅栏包裹的 JSON → 正确解析
-  - 空步骤列表 → 返回 None
-- [ ] 测试步骤间依赖关系的正确性
-
-**验收标准**：planner 所有正常/异常路径有测试覆盖。
-
----
-
-### Task 1.4 — 配置 Schema
-
-**问题**：supervisor 的所有参数（port、heartbeat_timeout 等）通过 CLI 硬编码，无法通过配置文件管理。
-
-**实现**：
-- [ ] 在 `config/schema.py` 添加 `SupervisorConfig` 模型：
-  ```python
-  class SupervisorConfig(BaseModel):
-      enabled: bool = False
-      host: str = "127.0.0.1"
-      port: int = 9200
-      heartbeat_timeout_s: float = 120.0
-      watchdog_interval_s: float = 30.0
-      task_default_timeout_s: float = 600.0
-      task_default_max_iterations: int = 30
-  ```
-- [ ] 在 `Config` 顶层模型中添加 `supervisor: SupervisorConfig`
-- [ ] CLI 命令中配置文件值作为默认值，CLI 参数覆盖
-- [ ] 测试：配置加载与 CLI 覆盖的优先级
-
-**验收标准**：supervisor 可通过 `config.json` 配置，CLI 参数可覆盖。
-
----
-
-### Task 1.5 — Worker 断线恢复
-
-**问题**：Worker 网络中断后无重连逻辑，直接崩溃退出。
-
-**实现**：
-- [ ] `SupervisorClient` 中所有 HTTP 调用添加重试包装（指数退避，最多 5 次）
-- [ ] `WorkerRunner._heartbeat_loop()` 中心跳失败不应崩溃整个 worker
-- [ ] `WorkerRunner._poll_loop()` 中 claim 失败不应退出循环
-- [ ] 注册失败时等待后重试而非立即退出
-- [ ] 测试：模拟网络中断 → 重连 → 恢复正常工作
-
-**验收标准**：supervisor 短暂不可用时，worker 自动重连并恢复任务执行。
-
----
-
 ## Phase 2 — 状态持久化与崩溃恢复
 
 **目标**：supervisor 重启后不丢失状态，支持紧急维护与版本升级。
@@ -216,7 +86,7 @@
 **问题**：当前注册表纯内存，supervisor 进程重启 = 所有状态丢失。
 
 **实现**：
-- [ ] 定义 `RegistryStore` 抽象接口：
+- [x] 定义 `RegistryStore` 抽象接口：
   ```python
   class RegistryStore(ABC):
       async def save_worker(self, worker: WorkerInfo) -> None
@@ -228,11 +98,11 @@
       async def delete_worker(self, worker_id: str) -> None
       # ...
   ```
-- [ ] 实现 `SQLiteRegistryStore`（复用 X-Ray 的 SQLite 模式）
-- [ ] `WorkerRegistry` 接受 `store: RegistryStore` 参数
-- [ ] 启动时从 store 加载状态，关键操作后写入 store
-- [ ] 保持内存态 dict 作为热缓存，store 作为持久层
-- [ ] 测试：重启后状态恢复、并发写入安全
+- [x] 实现 `SQLiteRegistryStore`（复用 X-Ray 的 SQLite 模式）
+- [x] `WorkerRegistry` 接受 `store: RegistryStore` 参数
+- [x] 启动时从 store 加载状态，关键操作后写入 store
+- [x] 保持内存态 dict 作为热缓存，store 作为持久层
+- [x] 测试：重启后状态恢复、并发写入安全
 
 **验收标准**：supervisor 重启后，未完成的任务和计划自动恢复。
 
@@ -243,13 +113,13 @@
 **问题**：任务失败后直接标记 FAILED，无重试机会。
 
 **实现**：
-- [ ] `Task` 模型添加 `retry_count: int = 0` 和 `max_retries: int = 0`
-- [ ] `report_result(status=FAILED)` 时检查 `retry_count < max_retries`：
+- [x] `Task` 模型添加 `retry_count: int = 0` 和 `max_retries: int = 0`
+- [x] `report_result(status=FAILED)` 时检查 `retry_count < max_retries`：
   - 是 → 状态回 PENDING + `retry_count += 1`
   - 否 → 最终 FAILED
-- [ ] 重试时自动选择不同 worker（避免重复故障）
-- [ ] 计划步骤级别的重试策略
-- [ ] 测试：重试次数耗尽、重试成功、重试分配到不同 worker
+- [x] 重试时自动选择不同 worker（避免重复故障）
+- [x] 计划步骤级别的重试策略
+- [x] 测试：重试次数耗尽、重试成功、重试分配到不同 worker
 
 **验收标准**：瞬时故障（LLM 超时、网络抖动）可自动重试。
 
@@ -260,14 +130,14 @@
 **问题**：Worker 收到 SIGTERM 时应完成当前任务再退出，而非直接中断。
 
 **实现**：
-- [ ] `WorkerRunner` 注册信号处理：`SIGTERM` / `SIGINT`
-- [ ] 收到信号后：
+- [x] `WorkerRunner` 注册信号处理：`SIGTERM` / `SIGINT`
+- [x] 收到信号后：
   1. 停止轮询新任务
   2. 等待当前任务完成（或超时后强制中断）
   3. 注销 worker
   4. 退出
-- [ ] 添加 `--drain-timeout` CLI 参数，控制优雅关闭等待时间
-- [ ] 测试：信号处理 + 任务完成后退出
+- [x] 添加 `--drain-timeout` CLI 参数，控制优雅关闭等待时间
+- [x] 测试：信号处理 + 任务完成后退出
 
 **验收标准**：`kill <worker_pid>` 时 worker 完成当前任务后干净退出。
 
@@ -333,7 +203,7 @@
 
 ## Phase 4 — Agent Loop 集成
 
-**目标**：将 supervisor 委派能力无缝集成到现有 Agent Loop，让 agent 可以"自然地"将子任务委派给 worker pool。
+**目标**：将 supervisor 委派能力无缝集成到现有 Agent Loop，让 agent 可以自然地将子任务委派给 worker pool。
 
 **前置依赖**：Phase 3
 
@@ -494,7 +364,7 @@
 
 ### Task 7.1 — 条件分支
 
-**问题**：DAG 依赖只支持"全部完成才继续"，不支持条件跳转。
+**问题**：DAG 依赖只支持“全部完成才继续”，不支持条件跳转。
 
 **实现**：
 - [ ] `PlanStep` 添加 `condition: str | None`（基于前序步骤结果的条件表达式）
@@ -643,82 +513,30 @@
 
 | Phase | 优先级 | 价值 | 复杂度 | 建议顺序 |
 |-------|--------|------|--------|----------|
-| **Phase 1 — 生产加固** | 🔴 P0 | 可靠运行的基础 | 中 | **立即开始** |
-| **Phase 2 — 持久化** | 🔴 P0 | 生产部署必需 | 高 | Phase 1 后 |
-| **Phase 3 — 通道集成** | 🟡 P1 | 用户可见价值 | 中 | Phase 1 后 |
+| **Phase 2 — 持久化** | 🔴 P0 | 生产部署必需 | 高 | **立即开始** |
+| **Phase 3 — 通道集成** | 🟡 P1 | 用户可见价值 | 中 | Phase 2 并行评估 |
 | **Phase 4 — Loop 集成** | 🟡 P1 | 无缝体验 | 中 | Phase 3 后 |
 | **Phase 5 — 记忆共享** | 🟡 P1 | 任务质量提升 | 高 | Phase 2 后 |
 | **Phase 6 — 高级调度** | 🟢 P2 | 效率优化 | 中 | Phase 2 后 |
 | **Phase 7 — 计划智能** | 🟢 P2 | 能力扩展 | 高 | Phase 3 后 |
-| **Phase 8 — 安全认证** | 🟡 P1 | 生产安全 | 中 | Phase 1 后 |
-| **Phase 9 — 仪表盘** | 🟢 P2 | 运维友好 | 中 | Phase 1 后 |
-| **Phase 10 — 水平扩展** | ⚪ P3 | 规模化 | 很高 | Phase 2+8 后 |
+| **Phase 8 — 安全认证** | 🟡 P1 | 生产安全 | 中 | Phase 2/3 后 |
+| **Phase 9 — 仪表盘** | 🟢 P2 | 运维友好 | 中 | Phase 2 后 |
+| **Phase 10 — 水平扩展** | ⚪ P3 | 规模化 | 很高 | Phase 2 + Phase 8 后 |
 
 ### 推荐实施路线
 
-```
-Phase 0 ✅ ─┬─► Phase 1（加固） ─┬─► Phase 2（持久化） ─► Phase 5（记忆）
-             │                    │                        ─► Phase 6（调度）
-             │                    ├─► Phase 3（通道） ─► Phase 4（Loop） ─► Phase 7（计划）
-             │                    ├─► Phase 8（安全）
-             │                    └─► Phase 9（仪表盘）
+```text
+Phase 0 ✅ ─┬─► Phase 1 ✅
              │
-             └─► Phase 10（扩展）需要 Phase 2 + Phase 8
+             └─► Phase 2（持久化） ─┬─► Phase 5（记忆）
+                                     ├─► Phase 6（调度）
+                                     ├─► Phase 3（通道） ─► Phase 4（Loop） ─► Phase 7（计划）
+                                     ├─► Phase 8（安全）
+                                     └─► Phase 9（仪表盘）
+
+Phase 10（扩展）需要 Phase 2 + Phase 8
 ```
 
 ---
 
-## 附录：当前代码清单
-
-### Supervisor 模块（~1,280 行）
-
-```
-nanobot/supervisor/
-├── __init__.py                  # 包入口
-├── app.py                       # FastAPI 应用工厂（~90 行）
-├── models.py                    # 域模型：Worker/Task/Plan/协议消息（~192 行）
-├── registry.py                  # 注册表：状态管理 + 业务逻辑（~350 行）
-├── planner.py                   # LLM 驱动计划生成（~130 行）
-├── watchdog.py                  # 心跳监控 + Worker 驱逐（~70 行）
-└── api/
-    ├── __init__.py
-    ├── workers.py               # Worker CRUD 端点（~115 行，5 endpoints）
-    ├── tasks.py                 # 任务生命周期端点（~200 行，7 endpoints）
-    └── plans.py                 # 计划管理端点（~130 行，5 endpoints）
-```
-
-### Worker 模块（~480 行）
-
-```
-nanobot/worker/
-├── __init__.py                  # 包入口
-├── client.py                    # HTTP 客户端（~130 行）
-└── runner.py                    # 主事件循环 + LLM 执行（~350 行）
-```
-
-### 测试（~1,010+ 行）
-
-```
-tests/
-├── test_supervisor_models.py        # 数据模型验证（~80 行）
-├── test_supervisor_registry.py      # 注册表业务逻辑（~180 行）
-├── test_supervisor_api.py           # API 端点（~200 行）
-├── test_supervisor_integration.py   # 端到端集成（~550 行，13 tests）
-└── test_worker_client.py            # Worker 客户端（~126 行）
-```
-
-### X-Ray 集成
-
-```
-nanobot/xray/events.py          # 14 个 supervisor 事件类型常量（已定义，未发射）
-```
-
-### CLI
-
-```
-nanobot/cli/commands.py          # supervisor 命令（~85 行）+ worker 命令（~50 行）
-```
-
----
-
-*文档创建于 2026-03-26 | 基于 commit `e882a80` (feature/xray-monitoring)*
+*文档创建于 2026-03-26 | 活跃版整理于 2026-03-28 | 基于 commit `e882a80` (feature/xray-monitoring)*

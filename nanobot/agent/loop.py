@@ -28,6 +28,7 @@ from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import Session, SessionManager
+from nanobot.xray.events import EventType
 
 if TYPE_CHECKING:
     from nanobot.agent.memory import MemoryStore
@@ -116,6 +117,7 @@ class AgentLoop:
             store=shared_memory_store,
         )
         self.observer: XRayObserver | None = None
+        self.xray_capture_full_messages: bool = False
         self._register_default_tools()
 
     def _register_default_tools(self) -> None:
@@ -173,6 +175,14 @@ class AgentLoop:
         return re.sub(r"<think>[\s\S]*?</think>", "", text).strip() or None
 
     @staticmethod
+    def _extract_think(text: str | None) -> str | None:
+        """Extract concatenated <think>…</think> content from text."""
+        if not text:
+            return None
+        blocks = re.findall(r"<think>([\s\S]*?)</think>", text)
+        return "\n\n".join(b.strip() for b in blocks if b.strip()) or None
+
+    @staticmethod
     def _tool_hint(tool_calls: list) -> str:
         """Format tool calls as concise hint, e.g. 'web_search("query")'."""
         def _fmt(tc):
@@ -189,9 +199,11 @@ class AgentLoop:
         on_progress: Callable[..., Awaitable[None]] | None = None,
         session_key: str | None = None,
         channel: str | None = None,
+        run_id: str | None = None,
     ) -> tuple[str | None, list[str], list[dict]]:
         """Run the agent iteration loop."""
-        run_id = uuid.uuid4().hex[:12]
+        if run_id is None:
+            run_id = uuid.uuid4().hex[:12]
         messages = initial_messages
         iteration = 0
         final_content = None
@@ -202,11 +214,11 @@ class AgentLoop:
             try:
                 await self.observer.emit(
                     run_id=run_id,
-                    event_type="agent_start",
+                    event_type=EventType.AGENT_START,
                     data={"session_key": session_key, "channel": channel, "model": self.model}
                 )
             except Exception:
-                pass
+                logger.debug("xray emit failed for agent_start", exc_info=True)
 
         while iteration < self.max_iterations:
             iteration += 1
@@ -221,13 +233,48 @@ class AgentLoop:
                         content = last_msg.get("content", "")
                         if isinstance(content, str):
                             last_msg_summary = content[:200]
+                    req_data: dict[str, Any] = {
+                        "model": self.model,
+                        "message_count": len(messages),
+                        "last_message_preview": last_msg_summary,
+                    }
+                    if self.xray_capture_full_messages and logger.level("DEBUG").no >= logger._core.min_level and messages:
+                        xray_msgs = []
+                        for m in messages:
+                            role = m.get("role", "")
+                            mc = m.get("content") or ""
+                            if isinstance(mc, list):
+                                mc = " ".join(
+                                    part.get("text", "") for part in mc if isinstance(part, dict)
+                                )
+                            if role == "system":
+                                xray_msgs.append({"role": "system", "content": mc[:20000]})
+                            elif role == "user":
+                                xray_msgs.append({"role": "user", "content": mc[:5000]})
+                            elif role == "assistant":
+                                entry: dict[str, Any] = {"role": "assistant", "content": mc[:20000]}
+                                if m.get("tool_calls"):
+                                    entry["tool_calls"] = [
+                                        {"name": tc["function"]["name"], "arguments": tc["function"].get("arguments", "")}
+                                        for tc in m["tool_calls"]
+                                    ]
+                                xray_msgs.append(entry)
+                            elif role == "tool":
+                                xray_msgs.append({
+                                    "role": "tool",
+                                    "tool_call_id": m.get("tool_call_id", ""),
+                                    "name": m.get("name", ""),
+                                    "content": mc[:20000],
+                                })
+                        if xray_msgs:
+                            req_data["messages"] = xray_msgs
                     await self.observer.emit(
                         run_id=run_id,
-                        event_type="llm_request",
-                        data={"model": self.model, "message_count": len(messages), "last_message_preview": last_msg_summary}
+                        event_type=EventType.LLM_REQUEST,
+                        data=req_data,
                     )
                 except Exception:
-                    pass
+                    logger.debug("xray emit failed for llm_request", exc_info=True)
 
             response = await self.provider.chat_with_retry(
                 messages=messages,
@@ -241,19 +288,34 @@ class AgentLoop:
                     if response.usage:
                         usage_dict = {"prompt_tokens": response.usage.prompt_tokens, "completion_tokens": response.usage.completion_tokens, "total_tokens": response.usage.total_tokens}
                         total_tokens += response.usage.total_tokens or 0
-                    tool_call_names = [tc.name for tc in response.tool_calls] if response.has_tool_calls else []
+                    tool_calls_data: list[dict[str, Any]] = []
+                    if response.has_tool_calls:
+                        for tc in response.tool_calls:
+                            tool_calls_data.append({"name": tc.name, "arguments": tc.arguments})
+                    resp_data: dict[str, Any] = {
+                        "content": (response.content or "")[:20000],
+                        "content_preview": (response.content or "")[:200],
+                        "tool_calls": tool_calls_data,
+                        "usage": usage_dict,
+                        "finish_reason": response.finish_reason,
+                    }
+                    if response.reasoning_content:
+                        resp_data["reasoning_content"] = response.reasoning_content[:10000]
+                    if response.thinking_blocks:
+                        resp_data["thinking_blocks"] = response.thinking_blocks
+                    # Extract <think> blocks from content for models that
+                    # embed chain-of-thought inline (e.g. DeepSeek-R1).
+                    if not response.reasoning_content and not response.thinking_blocks:
+                        think_text = self._extract_think(response.content)
+                        if think_text:
+                            resp_data["think_content"] = think_text[:10000]
                     await self.observer.emit(
                         run_id=run_id,
-                        event_type="llm_response",
-                        data={
-                            "content_preview": (response.content or "")[:200],
-                            "tool_calls": tool_call_names,
-                            "usage": usage_dict,
-                            "finish_reason": response.finish_reason,
-                        }
+                        event_type=EventType.LLM_RESPONSE,
+                        data=resp_data,
                     )
                 except Exception:
-                    pass
+                    logger.debug("xray emit failed for llm_response", exc_info=True)
 
             if response.has_tool_calls:
                 if on_progress:
@@ -306,11 +368,11 @@ class AgentLoop:
             try:
                 await self.observer.emit(
                     run_id=run_id,
-                    event_type="agent_end",
+                    event_type=EventType.AGENT_END,
                     data={"tools_used": tools_used, "iteration_count": iteration, "total_tokens": total_tokens}
                 )
             except Exception:
-                pass
+                logger.debug("xray emit failed for agent_end", exc_info=True)
 
         return final_content, tools_used, messages
 
@@ -368,28 +430,29 @@ class AgentLoop:
 
     async def _dispatch(self, msg: InboundMessage) -> None:
         """Process a message under the global lock."""
+        run_id = uuid.uuid4().hex[:12]
         if self.observer:
             try:
                 await self.observer.emit(
-                    run_id=msg.session_key or f"{msg.channel}:{msg.chat_id}",
-                    event_type="message_in",
+                    run_id=run_id,
+                    event_type=EventType.MESSAGE_IN,
                     data={"channel": msg.channel, "sender_id": msg.sender_id, "chat_id": msg.chat_id, "content_preview": msg.content[:200] if msg.content else ""}
                 )
             except Exception:
-                pass
+                logger.debug("xray emit failed for message_in", exc_info=True)
         async with self._processing_lock:
             try:
-                response = await self._process_message(msg)
+                response = await self._process_message(msg, run_id=run_id)
                 if response is not None:
                     if self.observer:
                         try:
                             await self.observer.emit(
-                                run_id=msg.session_key or f"{msg.channel}:{msg.chat_id}",
-                                event_type="message_out",
+                                run_id=run_id,
+                                event_type=EventType.MESSAGE_OUT,
                                 data={"channel": response.channel, "chat_id": response.chat_id, "content_preview": response.content[:200] if response.content else ""}
                             )
                         except Exception:
-                            pass
+                            logger.debug("xray emit failed for message_out", exc_info=True)
                     await self.bus.publish_outbound(response)
                 elif msg.channel == "cli":
                     await self.bus.publish_outbound(OutboundMessage(
@@ -425,6 +488,7 @@ class AgentLoop:
         msg: InboundMessage,
         session_key: str | None = None,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        run_id: str | None = None,
     ) -> OutboundMessage | None:
         """Process a single inbound message and return the response."""
         # System messages: parse origin from chat_id ("channel:chat_id")
@@ -441,7 +505,7 @@ class AgentLoop:
                 history=history,
                 current_message=msg.content, channel=channel, chat_id=chat_id,
             )
-            final_content, _, all_msgs = await self._run_agent_loop(messages, session_key=key, channel=channel)
+            final_content, _, all_msgs = await self._run_agent_loop(messages, session_key=key, channel=channel, run_id=run_id)
             self._save_turn(session, all_msgs, 1 + len(history))
             self.sessions.save(session)
             await self.memory_consolidator.maybe_consolidate_by_tokens(session)
@@ -513,7 +577,7 @@ class AgentLoop:
 
         final_content, _, all_msgs = await self._run_agent_loop(
             initial_messages, on_progress=on_progress or _bus_progress,
-            session_key=key, channel=msg.channel,
+            session_key=key, channel=msg.channel, run_id=run_id,
         )
 
         if final_content is None:

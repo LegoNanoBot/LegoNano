@@ -567,7 +567,7 @@ def gateway(
 
                 # 初始化存储
                 db_path = str(config.workspace_path / config.xray.db_path)
-                xray_store = SQLiteEventStore(db_path)
+                xray_store = SQLiteEventStore(db_path, max_runs=config.xray.retain_runs)
                 asyncio.get_event_loop().run_until_complete(xray_store.init())
 
                 # 初始化 SSE 和 Collector
@@ -579,6 +579,7 @@ def gateway(
                 # 创建 Observer 并注入
                 xray_observer = XRayObserver(collector)
                 agent.observer = xray_observer
+                agent.xray_capture_full_messages = config.xray.capture_full_messages
                 if hasattr(agent, 'tools') and agent.tools:
                     agent.tools.observer = xray_observer
                 # 也注入到 subagent manager（如果存在）
@@ -1359,26 +1360,42 @@ def _login_github_copilot() -> None:
 
 @app.command()
 def supervisor(
-    port: int = typer.Option(9200, "--port", "-p", help="Supervisor API port"),
-    host: str = typer.Option("127.0.0.1", "--host", help="Supervisor API bind address"),
+    port: int | None = typer.Option(None, "--port", "-p", help="Supervisor API port"),
+    host: str | None = typer.Option(None, "--host", help="Supervisor API bind address"),
     workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
-    heartbeat_timeout: float = typer.Option(120.0, "--heartbeat-timeout", help="Worker heartbeat timeout (seconds)"),
+    db_path: str | None = typer.Option(None, "--db", help="Supervisor state database path"),
+    heartbeat_timeout: float | None = typer.Option(None, "--heartbeat-timeout", help="Worker heartbeat timeout (seconds)"),
+    watchdog_interval: float | None = typer.Option(None, "--watchdog-interval", help="Watchdog scan interval (seconds)"),
 ):
     """Start the supervisor node (control plane for distributed workers)."""
     from nanobot.supervisor.app import create_supervisor_app
     from nanobot.supervisor.registry import WorkerRegistry
+    from nanobot.supervisor.store import SQLiteRegistryStore
     from nanobot.supervisor.watchdog import WatchdogService
 
     cfg = _load_runtime_config(config, workspace)
     sync_workspace_templates(cfg.workspace_path)
 
-    console.print(f"{__logo__} Starting supervisor on {host}:{port}...")
+    resolved_host = host or cfg.supervisor.host
+    resolved_port = port if port is not None else cfg.supervisor.port
+    resolved_heartbeat_timeout = (
+        heartbeat_timeout
+        if heartbeat_timeout is not None
+        else cfg.supervisor.heartbeat_timeout_s
+    )
+    resolved_watchdog_interval = (
+        watchdog_interval
+        if watchdog_interval is not None
+        else cfg.supervisor.watchdog_interval_s
+    )
+    resolved_db_path = str((cfg.workspace_path / (db_path or cfg.supervisor.db_path)).resolve())
 
-    registry = WorkerRegistry(heartbeat_timeout_s=heartbeat_timeout)
+    console.print(f"{__logo__} Starting supervisor on {resolved_host}:{resolved_port}...")
 
     # Optional: set up X-Ray stores for aggregated monitoring
     xray_kwargs: dict = {}
+    collector = None
     if cfg.xray.enabled:
         try:
             from nanobot.xray import XRAY_AVAILABLE
@@ -1388,8 +1405,8 @@ def supervisor(
                 from nanobot.xray.store.sqlite import SQLiteEventStore
 
                 db_path = str(cfg.workspace_path / cfg.xray.db_path)
-                xray_store = SQLiteEventStore(db_path)
-                asyncio.get_event_loop().run_until_complete(xray_store.init())
+                xray_store = SQLiteEventStore(db_path, max_runs=cfg.xray.retain_runs)
+                asyncio.run(xray_store.init())
 
                 sse_hub = SSEHub()
                 collector = EventCollector()
@@ -1409,6 +1426,29 @@ def supervisor(
         except Exception as e:
             console.print(f"[yellow]X-Ray init failed: {e}[/yellow]")
 
+    registry_store = None
+    if SQLiteRegistryStore is None:
+        console.print("[yellow]Supervisor state store unavailable: install xray extras for SQLite persistence. Falling back to memory.[/yellow]")
+    else:
+        try:
+            registry_store = SQLiteRegistryStore(resolved_db_path)
+            asyncio.run(registry_store.init())
+            console.print(f"[green]✓[/green] Supervisor state store at {resolved_db_path}")
+        except Exception as e:
+            registry_store = None
+            console.print(f"[yellow]Supervisor state store init failed: {e}. Falling back to memory.[/yellow]")
+
+    registry = WorkerRegistry(
+        heartbeat_timeout_s=resolved_heartbeat_timeout,
+        task_default_timeout_s=cfg.supervisor.task_default_timeout_s,
+        task_default_max_iterations=cfg.supervisor.task_default_max_iterations,
+        store=registry_store,
+        collector=collector,
+    )
+
+    if registry_store is not None:
+        asyncio.run(registry.restore())
+
     supervisor_app = create_supervisor_app(
         worker_registry=registry,
         **xray_kwargs,
@@ -1418,13 +1458,13 @@ def supervisor(
 
     uvi_config = uvicorn.Config(
         supervisor_app,
-        host=host,
-        port=port,
+        host=resolved_host,
+        port=resolved_port,
         log_level="info",
     )
     server = uvicorn.Server(uvi_config)
 
-    watchdog = WatchdogService(registry, check_interval_s=30.0)
+    watchdog = WatchdogService(registry, check_interval_s=resolved_watchdog_interval)
 
     async def _run_supervisor():
         await watchdog.start()
@@ -1432,10 +1472,12 @@ def supervisor(
             await server.serve()
         finally:
             watchdog.stop()
+            if registry_store is not None:
+                await registry_store.close()
             if "event_store" in xray_kwargs:
                 await xray_kwargs["event_store"].close()
 
-    console.print(f"[green]✓[/green] Supervisor API at http://{host}:{port}/api/docs")
+    console.print(f"[green]✓[/green] Supervisor API at http://{resolved_host}:{resolved_port}/api/docs")
     asyncio.run(_run_supervisor())
 
 
@@ -1452,6 +1494,7 @@ def worker(
     workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
     poll_interval: float = typer.Option(3.0, "--poll-interval", help="Task poll interval (seconds)"),
+    drain_timeout: float = typer.Option(30.0, "--drain-timeout", help="Max seconds to wait for current task during shutdown"),
 ):
     """Start a worker node that executes tasks from the supervisor."""
     from nanobot.worker.runner import WorkerRunner
@@ -1470,6 +1513,7 @@ def worker(
         model=cfg.agents.defaults.model,
         max_iterations=cfg.agents.defaults.max_tool_iterations,
         poll_interval_s=poll_interval,
+        drain_timeout_s=drain_timeout,
         web_search_config=cfg.tools.web.search,
         web_proxy=cfg.tools.web.proxy or None,
         exec_config=cfg.tools.exec,
