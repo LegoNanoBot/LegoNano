@@ -6,6 +6,7 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
+from nanobot.agent.memory import MemoryStore
 from nanobot.supervisor.app import create_supervisor_app
 from nanobot.supervisor.registry import WorkerRegistry
 
@@ -16,8 +17,11 @@ def registry():
 
 
 @pytest.fixture
-def client(registry):
-    app = create_supervisor_app(worker_registry=registry)
+def client(registry, tmp_path):
+    app = create_supervisor_app(
+        worker_registry=registry,
+        memory_store=MemoryStore(tmp_path),
+    )
     return TestClient(app)
 
 
@@ -405,6 +409,12 @@ def test_plan_full_lifecycle(client):
     plan_data = plan_resp.json()["plan"]
     assert plan_data["steps"][1]["task_id"] is not None
 
+    step_1_task = client.get(
+        f"/api/v1/supervisor/tasks/{plan_data['steps'][1]['task_id']}"
+    ).json()["task"]
+    assert "Completed dependency summaries:" in step_1_task["context"]
+    assert "step 0 done" in step_1_task["context"]
+
     # Claim and complete step 1
     claim_resp2 = client.post("/api/v1/supervisor/tasks/claim", json={"worker_id": "w1"})
     task_1 = claim_resp2.json()["task"]
@@ -419,3 +429,114 @@ def test_plan_full_lifecycle(client):
     # Plan should be completed
     final_plan = client.get(f"/api/v1/supervisor/plans/{plan_id}").json()["plan"]
     assert final_plan["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Session endpoints
+# ---------------------------------------------------------------------------
+
+
+def test_session_get_not_found(client):
+    resp = client.get("/api/v1/supervisor/sessions/cli:user-1")
+    assert resp.status_code == 404
+
+
+def test_session_post_and_get_roundtrip(client):
+    payload = {
+        "messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world"},
+        ],
+        "metadata": {"channel": "cli"},
+    }
+
+    set_resp = client.post(
+        "/api/v1/supervisor/sessions/cli:user-1",
+        json={"value": payload},
+    )
+    assert set_resp.status_code == 200
+    assert set_resp.json()["ok"] is True
+    assert set_resp.json()["value"] == payload
+
+    get_resp = client.get("/api/v1/supervisor/sessions/cli:user-1")
+    assert get_resp.status_code == 200
+    assert get_resp.json()["key"] == "cli:user-1"
+    assert get_resp.json()["value"] == payload
+
+
+def test_session_post_payload_too_large(client):
+    too_large = {"blob": "x" * (256 * 1024)}
+
+    resp = client.post(
+        "/api/v1/supervisor/sessions/cli:user-2",
+        json={"value": too_large},
+    )
+
+    assert resp.status_code == 413
+
+
+def test_session_store_auto_init_for_sqlite(tmp_path):
+    pytest.importorskip("aiosqlite")
+
+    from nanobot.supervisor.session_store import SQLiteDistributedSessionStore
+
+    db_path = tmp_path / "supervisor.db"
+    app = create_supervisor_app(
+        worker_registry=WorkerRegistry(heartbeat_timeout_s=60.0),
+        session_store=SQLiteDistributedSessionStore(str(db_path)),
+        memory_store=MemoryStore(tmp_path),
+    )
+
+    with TestClient(app) as tc:
+        set_resp = tc.post(
+            "/api/v1/supervisor/sessions/cli:user-3",
+            json={"value": {"messages": [{"role": "user", "content": "hello"}]}},
+        )
+        assert set_resp.status_code == 200
+
+        get_resp = tc.get("/api/v1/supervisor/sessions/cli:user-3")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["value"]["messages"][0]["content"] == "hello"
+
+
+# ---------------------------------------------------------------------------
+# Memory endpoints
+# ---------------------------------------------------------------------------
+
+
+def test_memory_long_term_read_write_roundtrip(client):
+    get_resp = client.get("/api/v1/supervisor/memory/long-term")
+    assert get_resp.status_code == 200
+    assert get_resp.json()["content"] == ""
+
+    content = "# Facts\n- user likes concise summaries"
+    put_resp = client.put(
+        "/api/v1/supervisor/memory/long-term",
+        json={"content": content},
+    )
+    assert put_resp.status_code == 200
+    assert put_resp.json()["ok"] is True
+    assert put_resp.json()["content"] == content
+
+    get_resp2 = client.get("/api/v1/supervisor/memory/long-term")
+    assert get_resp2.status_code == 200
+    assert get_resp2.json()["content"] == content
+
+
+def test_memory_context_and_history_append(client):
+    client.put(
+        "/api/v1/supervisor/memory/long-term",
+        json={"content": "- remember: prefer pytests with small fixtures"},
+    )
+
+    context_resp = client.get("/api/v1/supervisor/memory/context")
+    assert context_resp.status_code == 200
+    assert "## Long-term Memory" in context_resp.json()["context"]
+    assert "prefer pytests" in context_resp.json()["context"]
+
+    history_resp = client.post(
+        "/api/v1/supervisor/memory/history",
+        json={"entry": "[2026-01-01 10:00] [WORKER] task=t1 result=done"},
+    )
+    assert history_resp.status_code == 200
+    assert history_resp.json()["ok"] is True

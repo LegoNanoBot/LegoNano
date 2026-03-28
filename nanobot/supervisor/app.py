@@ -6,13 +6,18 @@ a single uvicorn server exposes both monitoring and control-plane endpoints.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI
+from loguru import logger
 
 from nanobot.supervisor.event_sink import XRayCollectorEventSink
-from nanobot.supervisor.api import plans, tasks, workers
+from nanobot.agent.memory import MemoryStore
+from nanobot.supervisor.api import memory, plans, sessions, tasks, workers
 from nanobot.supervisor.registry import WorkerRegistry
+from nanobot.supervisor.session_store import DistributedSessionStore, InMemoryDistributedSessionStore
 
 if TYPE_CHECKING:
     from nanobot.xray.collector import EventCollector
@@ -23,6 +28,8 @@ if TYPE_CHECKING:
 def create_supervisor_app(
     *,
     worker_registry: WorkerRegistry | None = None,
+    session_store: DistributedSessionStore | None = None,
+    memory_store: MemoryStore | None = None,
     event_store: "BaseEventStore | None" = None,
     sse_hub: "SSEHub | None" = None,
     collector: "EventCollector | None" = None,
@@ -33,11 +40,25 @@ def create_supervisor_app(
     If the X-Ray dependencies are available and the stores are provided, the
     existing X-Ray routers are mounted as well, giving a unified API surface.
     """
+    resolved_session_store = session_store or InMemoryDistributedSessionStore()
+
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI):
+        await resolved_session_store.init()
+        try:
+            yield
+        finally:
+            try:
+                await resolved_session_store.close()
+            except Exception:
+                logger.exception("Failed to close session store during supervisor shutdown")
+
     app = FastAPI(
         title="NanoBot Supervisor",
         description="Supervisor Gateway for distributed multi-bot collaboration",
         docs_url="/api/docs",
         redoc_url="/api/redoc",
+        lifespan=_lifespan,
     )
 
     # Supervisor state
@@ -45,11 +66,15 @@ def create_supervisor_app(
         event_sink=XRayCollectorEventSink(collector) if collector is not None else None,
     )
     app.state.worker_registry = registry
+    app.state.session_store = resolved_session_store
+    app.state.memory_store = memory_store or MemoryStore(Path.cwd())
 
     # Register supervisor API routers
     app.include_router(workers.router, prefix="/api/v1")
     app.include_router(tasks.router, prefix="/api/v1")
     app.include_router(plans.router, prefix="/api/v1")
+    app.include_router(sessions.router, prefix="/api/v1")
+    app.include_router(memory.router, prefix="/api/v1")
 
     # Mount X-Ray routers if stores are provided
     if event_store is not None and sse_hub is not None and collector is not None:
@@ -68,8 +93,6 @@ def create_supervisor_app(
         app.include_router(pages_views.router)
 
         # Static files and templates
-        from pathlib import Path
-
         from fastapi.staticfiles import StaticFiles
         from fastapi.templating import Jinja2Templates
 

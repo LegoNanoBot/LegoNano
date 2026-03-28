@@ -1422,6 +1422,7 @@ def supervisor(
     from nanobot.supervisor.registry import WorkerRegistry
     from nanobot.supervisor.result_reporter import SupervisorResultReporter
     from nanobot.supervisor.store import SQLiteRegistryStore
+    from nanobot.supervisor.session_store import SQLiteDistributedSessionStore
     from nanobot.supervisor.watchdog import WatchdogService
     from nanobot.worker.inprocess import InProcessWorker
 
@@ -1492,6 +1493,19 @@ def supervisor(
             registry_store = None
             console.print(f"[yellow]Supervisor state store init failed: {e}. Falling back to memory.[/yellow]")
 
+    session_store = None
+    if SQLiteDistributedSessionStore is None:
+        console.print("[yellow]Supervisor session store unavailable: install xray extras for SQLite persistence. Falling back to memory.[/yellow]")
+    else:
+        try:
+            session_store = SQLiteDistributedSessionStore(resolved_db_path)
+            console.print(f"[green]✓[/green] Supervisor session store at {resolved_db_path}")
+        except Exception as e:
+            session_store = None
+            console.print(f"[yellow]Supervisor session store init failed: {e}. Falling back to memory.[/yellow]")
+
+    memory_store = _make_memory_store(cfg)
+
     registry = WorkerRegistry(
         heartbeat_timeout_s=resolved_heartbeat_timeout,
         task_default_timeout_s=cfg.supervisor.task_default_timeout_s,
@@ -1507,6 +1521,8 @@ def supervisor(
 
     supervisor_app = create_supervisor_app(
         worker_registry=registry,
+        session_store=session_store,
+        memory_store=memory_store,
         **xray_kwargs,
     )
     supervisor_url = f"http://{resolved_host}:{resolved_port}"

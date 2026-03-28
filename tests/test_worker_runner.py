@@ -22,6 +22,7 @@ class _StubClient:
         self.unregister_calls = 0
         self.close_calls = 0
         self.claim_calls = 0
+        self.memory_history_entries: list[str] = []
 
     async def claim_task(self, capabilities=None):
         self.claim_calls += 1
@@ -48,6 +49,12 @@ class _StubClient:
 
     async def close(self) -> None:
         self.close_calls += 1
+
+    async def get_memory_context(self) -> str:
+        return "## Long-term Memory\n- prefer deterministic tests"
+
+    async def append_memory_history(self, entry: str) -> None:
+        self.memory_history_entries.append(entry)
 
 
 @pytest.mark.asyncio
@@ -194,3 +201,51 @@ async def test_runner_force_interrupts_task_after_drain_timeout(tmp_path: Path) 
 
     assert client.unregister_calls == 1
     assert client.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_runner_build_system_prompt_includes_memory_context(tmp_path: Path) -> None:
+    client = _StubClient([{"ok": True}])
+    runner = WorkerRunner(
+        supervisor_url="http://test",
+        worker_id="w-prompt",
+        worker_name="worker",
+        workspace=tmp_path,
+        provider=_DummyProvider(),
+        model="mock-model",
+        supervisor_client=client,  # type: ignore[arg-type]
+    )
+
+    prompt = runner._build_system_prompt(
+        extra_context="task context",
+        memory_context="## Long-term Memory\n- project requires py312",
+    )
+
+    assert "## Context\ntask context" in prompt
+    assert "## Long-term Memory\n- project requires py312" in prompt
+
+
+@pytest.mark.asyncio
+async def test_runner_appends_memory_history_after_task(tmp_path: Path) -> None:
+    client = _StubClient([{"ok": True}])
+    runner = WorkerRunner(
+        supervisor_url="http://test",
+        worker_id="w-memory",
+        worker_name="worker",
+        workspace=tmp_path,
+        provider=_DummyProvider(),
+        model="mock-model",
+        supervisor_client=client,  # type: ignore[arg-type]
+    )
+
+    await runner._append_task_memory_history(
+        task_id="task-123",
+        instruction="summarize test outcomes",
+        result="all checks passed",
+    )
+
+    assert len(client.memory_history_entries) == 1
+    entry = client.memory_history_entries[0]
+    assert "task=task-123" in entry
+    assert "summarize test outcomes" in entry
+    assert "all checks passed" in entry

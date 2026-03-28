@@ -48,6 +48,8 @@ class WorkerRegistry:
         heartbeat_timeout_s: float = 120.0,
         task_default_timeout_s: float = 600.0,
         task_default_max_iterations: int = 30,
+        task_context_char_limit: int = 4000,
+        task_result_summary_char_limit: int = 500,
         store: RegistryStore | None = None,
         event_sink: "EventSink | None" = None,
         collector: "EventCollector | None" = None,
@@ -60,6 +62,8 @@ class WorkerRegistry:
         self.heartbeat_timeout_s = heartbeat_timeout_s
         self.task_default_timeout_s = task_default_timeout_s
         self.task_default_max_iterations = task_default_max_iterations
+        self.task_context_char_limit = task_context_char_limit
+        self.task_result_summary_char_limit = task_result_summary_char_limit
         self._store = store
         self._event_sink = event_sink or (XRayCollectorEventSink(collector) if collector is not None else None)
         self._task_event_listener = task_event_listener
@@ -134,6 +138,63 @@ class WorkerRegistry:
         if self._store is None or plan is None:
             return
         await self._store.save_plan(plan)
+
+    @staticmethod
+    def _normalize_summary_text(text: str) -> str:
+        return " ".join(text.split())
+
+    @staticmethod
+    def _truncate_text(text: str, limit: int) -> str:
+        if limit <= 0:
+            return ""
+        if len(text) <= limit:
+            return text
+        if limit <= 3:
+            return text[:limit]
+        return text[: limit - 3].rstrip() + "..."
+
+    def _summarize_task_result(self, text: str | None) -> str | None:
+        if not text:
+            return None
+        normalized = self._normalize_summary_text(text)
+        if not normalized:
+            return None
+        return self._truncate_text(normalized, self.task_result_summary_char_limit)
+
+    def _build_task_context_unlocked(self, plan: Plan, step: PlanStep) -> str:
+        if not step.depends_on:
+            return ""
+
+        steps_by_index = {candidate.index: candidate for candidate in plan.steps}
+        dependency_lines: list[str] = []
+
+        for dependency_index in step.depends_on:
+            dependency_step = steps_by_index.get(dependency_index)
+            if dependency_step is None:
+                continue
+
+            summary = dependency_step.result_summary
+            if not summary and dependency_step.task_id is not None:
+                dependency_task = self._tasks.get(dependency_step.task_id)
+                if dependency_task is not None:
+                    summary = self._summarize_task_result(dependency_task.result)
+
+            if not summary:
+                continue
+
+            label = dependency_step.label or f"step {dependency_step.index}"
+            dependency_lines.append(f"- Step {dependency_step.index} ({label}): {summary}")
+
+        if not dependency_lines:
+            return ""
+
+        context_parts = [
+            f"Plan: {plan.title}" if plan.title else "",
+            f"Goal: {plan.goal}" if plan.goal else "",
+            "Completed dependency summaries:\n" + "\n".join(dependency_lines),
+        ]
+        context = "\n\n".join(part for part in context_parts if part)
+        return self._truncate_text(context, self.task_context_char_limit)
 
     async def _emit_event(self, run_id: str, event_type: str, data: dict[str, Any]) -> None:
         if self._event_sink is None:
@@ -589,6 +650,7 @@ class WorkerRegistry:
                         step_index=step.index,
                         instruction=step.instruction,
                         label=step.label or f"Plan {plan_id} step {step.index}",
+                        context=self._build_task_context_unlocked(plan, step),
                         max_iterations=self.task_default_max_iterations,
                         max_retries=step.max_retries,
                         timeout_s=self.task_default_timeout_s,
@@ -623,8 +685,7 @@ class WorkerRegistry:
                 task = self._tasks.get(step.task_id)
                 if task:
                     step.status = task.status
-                    if task.result:
-                        step.result_summary = task.result[:500]
+                    step.result_summary = self._summarize_task_result(task.result)
 
         all_done = all(
             s.status in (TaskStatus.COMPLETED, TaskStatus.CANCELLED)

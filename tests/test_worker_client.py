@@ -199,6 +199,42 @@ async def test_client_unregister_graceful():
 
 
 @pytest.mark.asyncio
+async def test_client_memory_endpoints():
+    client = SupervisorClient("http://localhost:9200", "w-test")
+    context_resp = _make_mock_response({"context": "## Long-term Memory\n- fact"})
+    get_resp = _make_mock_response({"content": "- fact"})
+    put_resp = _make_mock_response({"ok": True, "content": "- updated"})
+    append_resp = _make_mock_response({"ok": True})
+
+    with patch.object(
+        client._client,
+        "request",
+        AsyncMock(side_effect=[context_resp, get_resp, put_resp, append_resp]),
+    ) as mock_request:
+        context = await client.get_memory_context()
+        content = await client.get_long_term_memory()
+        updated = await client.put_long_term_memory("- updated")
+        await client.append_memory_history("[2026-01-01 10:00] task=t1")
+
+    assert context.startswith("## Long-term Memory")
+    assert content == "- fact"
+    assert updated == "- updated"
+
+    expected_calls = [
+        (("GET", "/api/v1/supervisor/memory/context"), {}),
+        (("GET", "/api/v1/supervisor/memory/long-term"), {}),
+        (("PUT", "/api/v1/supervisor/memory/long-term"), {"json": {"content": "- updated"}}),
+        (("POST", "/api/v1/supervisor/memory/history"), {"json": {"entry": "[2026-01-01 10:00] task=t1"}}),
+    ]
+    assert mock_request.call_count == len(expected_calls)
+    for call, (expected_args, expected_kwargs) in zip(mock_request.call_args_list, expected_calls):
+        assert call.args == expected_args
+        assert call.kwargs == expected_kwargs
+
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_client_register_retries_transient_request_errors():
     client = SupervisorClient("http://localhost:9200", "w-test")
     client._sleep = AsyncMock()
