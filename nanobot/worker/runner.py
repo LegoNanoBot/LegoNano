@@ -11,6 +11,7 @@ The runner is the main event loop for a worker process. It:
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import json
 import signal
 import time
@@ -262,6 +263,11 @@ class WorkerRunner:
                 status="completed",
                 result=final_result,
             )
+            await self._append_task_memory_history(
+                task_id=task_id,
+                instruction=instruction,
+                result=final_result,
+            )
             logger.info("Task {} completed successfully", task_id)
 
         except asyncio.TimeoutError:
@@ -331,7 +337,11 @@ class WorkerRunner:
         tools.register(WebSearchTool(config=ws_cfg, proxy=self.web_proxy))
         tools.register(WebFetchTool(proxy=self.web_proxy))
 
-        system_prompt = self._build_system_prompt(context)
+        memory_context = await self._load_memory_context()
+        system_prompt = self._build_system_prompt(
+            extra_context=context,
+            memory_context=memory_context,
+        )
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": instruction},
@@ -391,7 +401,7 @@ class WorkerRunner:
             return "Task completed (max iterations reached without final response)."
         return final_result
 
-    def _build_system_prompt(self, extra_context: str = "") -> str:
+    def _build_system_prompt(self, extra_context: str = "", memory_context: str = "") -> str:
         from nanobot.agent.context import ContextBuilder
         from nanobot.agent.skills import SkillsLoader
 
@@ -406,8 +416,35 @@ class WorkerRunner:
         if extra_context:
             parts.append(f"## Context\n{extra_context}")
 
+        if memory_context:
+            parts.append(memory_context)
+
         skills_summary = SkillsLoader(self.workspace).build_skills_summary()
         if skills_summary:
             parts.append(f"## Skills\n\nRead SKILL.md with read_file to use a skill.\n\n{skills_summary}")
 
         return "\n\n".join(parts)
+
+    async def _load_memory_context(self) -> str:
+        try:
+            return await self.client.get_memory_context()
+        except Exception as e:
+            logger.warning("Failed to load memory context from supervisor: {}", e)
+            return ""
+
+    async def _append_task_memory_history(self, *, task_id: str, instruction: str, result: str) -> None:
+        summary = result.strip().replace("\n", " ")
+        if len(summary) > 300:
+            summary = summary[:297] + "..."
+        instruction_summary = instruction.strip().replace("\n", " ")
+        if len(instruction_summary) > 120:
+            instruction_summary = instruction_summary[:117] + "..."
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        entry = (
+            f"[{timestamp}] [WORKER] task={task_id} "
+            f"instruction={instruction_summary} result={summary or '(empty)'}"
+        )
+        try:
+            await self.client.append_memory_history(entry)
+        except Exception as e:
+            logger.warning("Failed to append memory history for task {}: {}", task_id, e)

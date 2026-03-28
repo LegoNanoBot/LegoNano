@@ -502,6 +502,52 @@ async def test_plan_advances_on_task_completion(registry, _reg_worker):
 
 
 @pytest.mark.asyncio
+async def test_plan_step_context_includes_completed_dependency_summaries():
+    registry = WorkerRegistry(
+        heartbeat_timeout_s=5.0,
+        task_context_char_limit=140,
+        task_result_summary_char_limit=80,
+    )
+    await registry.register_worker(WorkerRegisterRequest(worker_id="w1", name="worker-1"))
+
+    plan = Plan(
+        title="Context plan",
+        goal="propagate summaries",
+        steps=[
+            PlanStep(index=0, instruction="step 0", label="fetch"),
+            PlanStep(index=1, instruction="step 1", label="use", depends_on=[0]),
+        ],
+    )
+    await registry.create_plan(plan)
+    await registry.approve_plan(plan.plan_id)
+
+    claimed = await registry.claim_task(TaskClaimRequest(worker_id="w1"))
+    assert claimed is not None
+
+    await registry.report_result(
+        TaskResultReport(
+            task_id=claimed.task_id,
+            worker_id="w1",
+            status=TaskStatus.COMPLETED,
+            result="first result with extra detail " * 8,
+        )
+    )
+    await registry._schedule_ready_steps(plan.plan_id)
+
+    updated_plan = await registry.get_plan(plan.plan_id)
+    assert updated_plan is not None
+    next_task_id = updated_plan.steps[1].task_id
+    assert next_task_id is not None
+
+    next_task = await registry.get_task(next_task_id)
+    assert next_task is not None
+    assert "Completed dependency summaries:" in next_task.context
+    assert "Step 0 (fetch):" in next_task.context
+    assert "first result with extra detail" in next_task.context
+    assert len(next_task.context) <= registry.task_context_char_limit
+
+
+@pytest.mark.asyncio
 async def test_cancel_plan(registry):
     steps = [PlanStep(index=0, instruction="step 0")]
     plan = Plan(title="Test", goal="test", steps=steps)

@@ -523,6 +523,11 @@ async def test_multi_step_plan_with_dependencies(
     assert p is not None
     assert p.status == PlanStatus.COMPLETED
 
+    assert len(prov.call_log) == 3
+    assert "Completed dependency summaries:" in prov.call_log[1][0]["content"]
+    assert "res-0" in prov.call_log[1][0]["content"]
+    assert "res-1" in prov.call_log[2][0]["content"]
+
 
 # =====================================================================
 #  Test 6 — Tool call round-trip

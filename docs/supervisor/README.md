@@ -4,9 +4,8 @@
 
 ## 文档分工
 
-- [活跃蓝图](../../SUPERVISOR_BLUEPRINT.md)
-  - 保留尚未完成的 Phase、优先级矩阵、实施路线。
-  - 适合作为当前执行入口。
+- [全局蓝图归档](SUPERVISOR_BLUEPRINT.md)
+  - 保留所有 Phase 定义、优先级矩阵、实施路线的归档。由于所有 P1 特性均已上线，当前蓝图转为归档。
 
 - [部署说明](deployment.md)
   - 说明当前代码状态下 supervisor、worker、gateway、channel 的正确启动顺序。
@@ -27,8 +26,11 @@
 - [Phase 4 Release Note](release-notes/phase-4-agent-loop-integration.md)
   - 记录 Agent Loop 原生委派、远程 subagent 与进程内 worker 阶段的交付与验证结果。
 
+- [Phase 5 Release Note](release-notes/phase-5-memory-and-context.md)
+  - 记录记忆与上下文共享（分布式会话、长期记忆）的交付与验证结果。
+
 ## 建议用法
 
-- 看下一步要做什么：优先阅读 [活跃蓝图](../../SUPERVISOR_BLUEPRINT.md)
+- 了解全景规划及未来展望：优先阅读 [全局蓝图归档](SUPERVISOR_BLUEPRINT.md)
 - 查已经做过什么、为什么这么做：进入对应 release note
 - 需要整理历史上下文：先看本索引，再跳转到对应阶段文档

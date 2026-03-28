@@ -1,6 +1,6 @@
-# Supervisor Gateway — 活跃蓝图
+# Supervisor Gateway — Blueprint (归档)
 
-> **当前状态**：Phase 0 到 Phase 4 已完成并归档；本文件仅保留未完成阶段的活跃规划。  
+> **当前状态**：Phase 0 到 Phase 5 核心及 P1 功能均已完成并发布；故本蓝图转为归档，移至 `docs/` 目录留存。  
 > **设计原则**：每个 Phase 可独立交付、独立测试、独立回滚。后续 Phase 依赖前置 Phase 但不破坏已有功能。
 
 ---
@@ -22,36 +22,41 @@
 ## 文档导航
 
 - 活跃规划：当前文件
-- 文档索引：[docs/supervisor/README.md](docs/supervisor/README.md)
-- 部署说明：[docs/supervisor/deployment.md](docs/supervisor/deployment.md)
+- 文档索引：[README.md](README.md)
+- 部署说明：[deployment.md](deployment.md)
 - 已完成归档：
-  - [Phase 0 Release Note](docs/supervisor/release-notes/phase-0-mvp.md)
-  - [Phase 1 Release Note](docs/supervisor/release-notes/phase-1-production-hardening.md)
-  - [Phase 2 Release Note](docs/supervisor/release-notes/phase-2-state-persistence-and-recovery.md)
-  - [Phase 3 Release Note](docs/supervisor/release-notes/phase-3-channel-integration.md)
-  - [Phase 4 Release Note](docs/supervisor/release-notes/phase-4-agent-loop-integration.md)
+  - [Phase 0 Release Note](release-notes/phase-0-mvp.md)
+  - [Phase 1 Release Note](release-notes/phase-1-production-hardening.md)
+  - [Phase 2 Release Note](release-notes/phase-2-state-persistence-and-recovery.md)
+  - [Phase 3 Release Note](release-notes/phase-3-channel-integration.md)
+  - [Phase 4 Release Note](release-notes/phase-4-agent-loop-integration.md)
+  - [Phase 5 Release Note](release-notes/phase-5-memory-and-context.md)
 
 ## 已完成阶段摘要
 
 ### Phase 0 — MVP 验证
 
-- 已完成，详细交付与历史快照见 [docs/supervisor/release-notes/phase-0-mvp.md](docs/supervisor/release-notes/phase-0-mvp.md)
+- 已完成，详细交付与历史快照见 [Phase 0 Release Note](release-notes/phase-0-mvp.md)
 
 ### Phase 1 — 生产加固
 
-- 已完成，详细交付与测试结果见 [docs/supervisor/release-notes/phase-1-production-hardening.md](docs/supervisor/release-notes/phase-1-production-hardening.md)
+- 已完成，详细交付与测试结果见 [Phase 1 Release Note](release-notes/phase-1-production-hardening.md)
 
 ### Phase 2 — 状态持久化与崩溃恢复
 
-- 已完成，详细交付与恢复/重试/优雅关闭结果见 [docs/supervisor/release-notes/phase-2-state-persistence-and-recovery.md](docs/supervisor/release-notes/phase-2-state-persistence-and-recovery.md)
+- 已完成，详细交付与恢复/重试/优雅关闭结果见 [Phase 2 Release Note](release-notes/phase-2-state-persistence-and-recovery.md)
 
 ### Phase 3 — 通道集成（双向桥接）
 
-- 已完成，详细交付与通道回传/路由/进度推送结果见 [docs/supervisor/release-notes/phase-3-channel-integration.md](docs/supervisor/release-notes/phase-3-channel-integration.md)
+- 已完成，详细交付与通道回传/路由/进度推送结果见 [Phase 3 Release Note](release-notes/phase-3-channel-integration.md)
 
 ### Phase 4 — Agent Loop 集成
 
-- 已完成，详细交付与远程委派 / 原生 subagent 集成 / 进程内 worker 结果见 [docs/supervisor/release-notes/phase-4-agent-loop-integration.md](docs/supervisor/release-notes/phase-4-agent-loop-integration.md)
+- 已完成，详细交付与远程委派 / 原生 subagent 集成 / 进程内 worker 结果见 [Phase 4 Release Note](release-notes/phase-4-agent-loop-integration.md)
+
+### Phase 5 — 记忆与上下文共享
+
+- 已完成，详细交付与共享存储 / 会话隔离结果见 [Phase 5 Release Note](release-notes/phase-5-memory-and-context.md)
 
 ---
 
@@ -99,10 +104,10 @@
 **问题**：`Task.context` 字段存在但未充分利用，worker 之间无法共享前序步骤的输出。
 
 **实现**：
-- [ ] 计划推进 `_schedule_ready_steps()` 时，自动将已完成步骤的 `result_summary` 注入下游步骤的 `context`
-- [ ] Worker 构建系统提示时包含 `task.context`
-- [ ] 支持上下文大小限制与摘要压缩
-- [ ] 测试：多步骤计划中上下文在步骤间正确传递
+- [x] 计划推进 `_schedule_ready_steps()` 时，自动将已完成步骤的 `result_summary` 注入下游步骤的 `context`
+- [x] Worker 构建系统提示时包含 `task.context`
+- [x] 支持上下文大小限制与摘要压缩
+- [x] 测试：多步骤计划中上下文在步骤间正确传递
 
 **验收标准**：步骤 B 可以看到步骤 A 的执行结果作为上下文。
 
@@ -113,11 +118,11 @@
 **问题**：`SessionManager` 是进程内内存缓存，无法跨 worker 共享。
 
 **实现**：
-- [ ] 定义 `DistributedSessionStore` 接口
-- [ ] 实现 SQLite 后端（复用 X-Ray 的 SQLite 基础设施）
-- [ ] Supervisor 端维护会话，worker 通过 API 读写
-- [ ] 添加 API 端点：`GET/POST /api/v1/supervisor/sessions/{key}`
-- [ ] 测试：多 worker 并发读写同一会话
+- [x] 定义 `DistributedSessionStore` 接口
+- [x] 实现 SQLite 后端（复用 X-Ray 的 SQLite 基础设施）
+- [x] Supervisor 端维护会话，worker 通过 API 读写
+- [x] 添加 API 端点：`GET/POST /api/v1/supervisor/sessions/{key}`
+- [x] 测试：多 worker 并发读写同一会话
 
 **验收标准**：多个 worker 处理同一用户的不同任务时，可以访问共享的对话历史。
 
@@ -128,10 +133,10 @@
 **问题**：Worker 运行时无法访问 MemoryStore（长期记忆）。
 
 **实现**：
-- [ ] 方案 A：Supervisor 端代理记忆访问（添加 API 端点）
+- [x] 方案 A：Supervisor 端代理记忆访问（添加 API 端点）
 - [ ] 方案 B：Worker 直接访问共享记忆后端（需要配置同步）
-- [ ] Worker `_build_system_prompt()` 中注入相关记忆上下文
-- [ ] 测试：Worker 可读取/写入记忆
+- [x] Worker `_build_system_prompt()` 中注入相关记忆上下文
+- [x] 测试：Worker 可读取/写入记忆
 
 **验收标准**：Worker 可以利用长期记忆提升任务执行质量。
 

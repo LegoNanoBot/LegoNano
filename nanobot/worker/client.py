@@ -231,3 +231,36 @@ class SupervisorClient:
                 "error": error,
             },
         )
+
+    # ------------------------------------------------------------------
+    # Memory operations
+    # ------------------------------------------------------------------
+
+    async def get_memory_context(self) -> str:
+        resp = await self._request_with_retry(
+            "GET",
+            "/api/v1/supervisor/memory/context",
+        )
+        return str(resp.json().get("context", ""))
+
+    async def get_long_term_memory(self) -> str:
+        resp = await self._request_with_retry(
+            "GET",
+            "/api/v1/supervisor/memory/long-term",
+        )
+        return str(resp.json().get("content", ""))
+
+    async def put_long_term_memory(self, content: str) -> str:
+        resp = await self._request_with_retry(
+            "PUT",
+            "/api/v1/supervisor/memory/long-term",
+            json={"content": content},
+        )
+        return str(resp.json().get("content", ""))
+
+    async def append_memory_history(self, entry: str) -> None:
+        await self._request_with_retry(
+            "POST",
+            "/api/v1/supervisor/memory/history",
+            json={"entry": entry},
+        )
