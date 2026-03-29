@@ -10,6 +10,7 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
+from nanobot.WebConsoleServer import api as webconsole_api
 from nanobot.supervisor.app import create_supervisor_app
 from nanobot.supervisor.models import Plan, PlanStep, Task, TaskClaimRequest, TaskStatus, WorkerRegisterRequest
 from nanobot.supervisor.registry import WorkerRegistry
@@ -38,6 +39,8 @@ async def test_webconsole_summary_collects_supervisor_state():
     assert data["plan_counts"]["total"] == 1
     assert data["workers"][0]["name"] == "Alpha"
     assert data["active_tasks"][0]["task_id"] == task.task_id
+    assert data["active_tasks"][0]["instruction_preview"] == "Run checks"
+    assert data["recent_plans"][0]["goal"] == "Ship phase-1"
 
 
 def test_webconsole_root_redirects_to_console():
@@ -55,10 +58,13 @@ def test_webconsole_page_renders_phase1_dashboard():
         response = client.get("/console")
 
     assert response.status_code == 200
-    assert "WebConsoleServer" in response.text
     assert "System Console" in response.text
+    assert "Interactive Controls" in response.text
+    assert "Launch A Quick Task" in response.text
+    assert "Filter Live Overview" in response.text
     assert "Worker Matrix" in response.text
     assert "Managed Components" in response.text
+    assert "/console-assets/webconsole.css?v=" in response.text
 
 
 def test_webconsole_summary_includes_runtime_component_status(monkeypatch, tmp_path):
@@ -98,3 +104,60 @@ def test_webconsole_stream_exposes_sse_updates():
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert any("event: overview" in line for line in lines)
+
+
+def test_webconsole_quick_create_task_creates_registry_task():
+    app = create_supervisor_app(worker_registry=WorkerRegistry())
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/webconsole/tasks/quick-create",
+            json={"label": "UI task", "instruction": "Inspect the queue"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is True
+    assert data["task"]["label"] == "UI task"
+    assert data["message"].startswith("Task ")
+
+
+@pytest.mark.asyncio
+async def test_webconsole_control_runtime_status_returns_script_output(monkeypatch):
+    async def fake_run_script(script_name: str):
+        return {
+            "script": script_name,
+            "returncode": 0,
+            "stdout": "runtime healthy",
+            "stderr": "",
+        }
+
+    monkeypatch.setattr(webconsole_api, "_run_script", fake_run_script)
+
+    app = create_supervisor_app(worker_registry=WorkerRegistry())
+    with TestClient(app) as client:
+        response = client.post("/api/v1/webconsole/control/runtime/status")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["scheduled"] is False
+    assert "runtime healthy" in data["message"]
+
+
+@pytest.mark.asyncio
+async def test_webconsole_control_supervisor_restart_schedules_background_action(monkeypatch):
+    scheduled = {"called": False}
+
+    async def fake_schedule(scripts: list[str]):
+        scheduled["called"] = True
+        assert scripts == ["stop-supervisor.sh", "start-supervisor.sh"]
+
+    monkeypatch.setattr(webconsole_api, "_schedule_disruptive_action", fake_schedule)
+
+    app = create_supervisor_app(worker_registry=WorkerRegistry())
+    with TestClient(app) as client:
+        response = client.post("/api/v1/webconsole/control/supervisor/restart")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["scheduled"] is True
+    assert scheduled["called"] is True

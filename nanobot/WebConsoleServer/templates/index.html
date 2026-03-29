@@ -3,7 +3,103 @@
 {% block title %}System Console · LegoNanoBot{% endblock %}
 
 {% block content %}
-<section id="console-overview">
+<section class="workbench-grid" id="workbench">
+    <article class="panel panel--action-surface">
+        <div class="panel__header panel__header--tight">
+            <div>
+                <span class="panel__eyebrow">Command Center</span>
+                <h2>Interactive Controls</h2>
+            </div>
+            <span class="count-badge">Live Ops</span>
+        </div>
+        <div class="action-grid">
+            <button type="button" class="action-button action-button--blue" data-refresh-now>
+                <span class="material-symbols-rounded">refresh</span>
+                <span>Refresh now</span>
+            </button>
+            <button type="button" class="action-button action-button--blue" data-control-target="runtime" data-control-action="status">
+                <span class="material-symbols-rounded">monitoring</span>
+                <span>Inspect runtime</span>
+            </button>
+            <button type="button" class="action-button action-button--green" data-control-target="gateway" data-control-action="restart">
+                <span class="material-symbols-rounded">cycle</span>
+                <span>Restart gateway</span>
+            </button>
+            <button type="button" class="action-button action-button--amber" data-control-target="supervisor" data-control-action="restart">
+                <span class="material-symbols-rounded">restart_alt</span>
+                <span>Restart supervisor</span>
+            </button>
+            <button type="button" class="action-button action-button--red" data-control-target="cluster" data-control-action="restart">
+                <span class="material-symbols-rounded">settings_backup_restore</span>
+                <span>Restart cluster</span>
+            </button>
+            <button type="button" class="action-button action-button--neutral" data-live-toggle>Pause live sync</button>
+        </div>
+        <p class="panel__hint">重启 supervisor 或 cluster 会短暂断开当前页面连接，控制命令会在后台调度。</p>
+    </article>
+
+    <article class="panel panel--composer">
+        <div class="panel__header panel__header--tight">
+            <div>
+                <span class="panel__eyebrow">Task Intake</span>
+                <h2>Launch A Quick Task</h2>
+            </div>
+            <span class="count-badge">Queue</span>
+        </div>
+        <form id="quick-task-form" class="task-form">
+            <label class="field">
+                <span>Task label</span>
+                <input type="text" name="label" maxlength="200" placeholder="例如：回归检查 / 配置热修复">
+            </label>
+            <label class="field">
+                <span>Instruction</span>
+                <textarea name="instruction" rows="5" placeholder="输入要交给 supervisor 的任务说明"></textarea>
+            </label>
+            <div class="task-form__footer">
+                <p>通过前端直接投递任务，用于临时巡检、批处理和人工介入。</p>
+                <button type="submit" class="primary-button">Create Task</button>
+            </div>
+        </form>
+    </article>
+</section>
+
+<section class="panel panel--filters">
+    <div class="panel__header panel__header--tight">
+        <div>
+            <span class="panel__eyebrow">Discovery</span>
+            <h2>Filter Live Overview</h2>
+        </div>
+        <span class="count-badge">Press /</span>
+    </div>
+    <div class="filters-bar">
+        <label class="field field--inline filters-bar__search">
+            <span>Search</span>
+            <input id="console-filter-input" type="text" placeholder="worker, task, plan, status, capability">
+        </label>
+        <div class="filter-chips">
+            <button type="button" class="filter-chip filter-chip--active" data-filter-mode="all">All</button>
+            <button type="button" class="filter-chip" data-filter-mode="workers">Workers</button>
+            <button type="button" class="filter-chip" data-filter-mode="tasks">Tasks</button>
+            <button type="button" class="filter-chip" data-filter-mode="plans">Plans</button>
+            <button type="button" class="filter-chip" data-filter-mode="attention">Needs attention</button>
+        </div>
+    </div>
+</section>
+
+<section class="panel panel--activity" id="activity">
+    <div class="panel__header panel__header--tight">
+        <div>
+            <span class="panel__eyebrow">Console Feed</span>
+            <h2>Recent Activity</h2>
+        </div>
+        <span class="count-badge">Last 8</span>
+    </div>
+    <div id="console-activity-log" class="activity-log">
+        <div class="activity-log__empty">控制动作、任务提交和计划审批结果会出现在这里。</div>
+    </div>
+</section>
+
+<section id="console-overview" class="overview-live">
     {% include "partials/overview.html" %}
 </section>
 {% endblock %}

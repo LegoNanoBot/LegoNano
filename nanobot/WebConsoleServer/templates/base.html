@@ -4,26 +4,123 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}LegoNanoBot WebConsoleServer{% endblock %}</title>
-    <link rel="stylesheet" href="/console-assets/webconsole.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:FILL@0..1&family=Roboto+Mono:wght@400;500&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <script>
+        (function () {
+            const savedTheme = window.localStorage.getItem("legonanobot-console-theme") || "light";
+            const resolvedTheme = savedTheme === "system"
+                ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+                : savedTheme;
+            document.documentElement.setAttribute("data-theme", resolvedTheme);
+            document.documentElement.setAttribute("data-theme-pref", savedTheme);
+        })();
+    </script>
+    <link rel="stylesheet" href="/console-assets/webconsole.css?v={{ asset_version }}">
 </head>
 <body>
     <div class="shell">
         <header class="hero">
-            <div class="hero__eyebrow">PHASE 1 · WebConsoleServer</div>
+            <div class="hero__topbar">
+                <div class="brand-lockup">
+                    <div class="brand-lockup__badge">
+                        <span class="material-symbols-rounded">deployed_code</span>
+                    </div>
+                    <div>
+                        <div class="hero__eyebrow">Google-Inspired Operations Console</div>
+                        <div class="brand-lockup__title">LegoNanoBot System Console</div>
+                    </div>
+                </div>
+                <div class="hero__utilities">
+                    <div class="theme-toggle" role="group" aria-label="Theme selector">
+                        <button type="button" class="theme-toggle__button" data-theme-choice="light">Light</button>
+                        <button type="button" class="theme-toggle__button" data-theme-choice="dark">Dark</button>
+                        <button type="button" class="theme-toggle__button" data-theme-choice="system">System</button>
+                    </div>
+                    <span id="console-transport" class="transport-badge transport-badge--loading">connecting</span>
+                </div>
+            </div>
             <div class="hero__head">
                 <div>
                     <h1>LegoNanoBot System Console</h1>
-                    <p>最小可用入口页，集中呈现 worker、task、plan 与 X-Ray 的整体状态。</p>
+                    <p>以更亲和的 Google 配色与卡片系统统一查看运行态、提交任务、审批计划，并直接控制关键组件。</p>
                 </div>
                 <div class="hero__actions">
-                    <span id="console-transport" class="transport-badge transport-badge--loading">connecting</span>
+                    <a class="ghost-button" href="#workbench">Open Workbench</a>
                     <a class="ghost-button" href="{{ links.api_docs }}">API Docs</a>
                     {% if links.xray_dashboard %}
                     <a class="primary-button" href="{{ links.xray_dashboard }}">Open X-Ray</a>
                     {% endif %}
                 </div>
             </div>
+            <nav class="hero__nav">
+                <a href="#workbench">Workbench</a>
+                <a href="#activity">Activity</a>
+                <a href="#console-overview">Live Overview</a>
+            </nav>
         </header>
+
+        <div id="console-toast" class="toast" hidden></div>
+        <div id="console-confirm" class="confirm-shell" hidden>
+            <div class="confirm-backdrop" data-confirm-close></div>
+            <div class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+                <div class="confirm-dialog__icon">
+                    <span class="material-symbols-rounded">warning</span>
+                </div>
+                <div class="confirm-dialog__body">
+                    <h2 id="confirm-title">Confirm action</h2>
+                    <p id="confirm-message"></p>
+                </div>
+                <div class="confirm-dialog__actions">
+                    <button type="button" class="ghost-button" data-confirm-close>Cancel</button>
+                    <button type="button" class="primary-button" id="confirm-accept">Continue</button>
+                </div>
+            </div>
+        </div>
+        <div id="console-drawer" class="drawer-shell" hidden>
+            <div class="drawer-backdrop" data-drawer-close></div>
+            <aside class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+                <div class="drawer-panel__topbar">
+                    <div>
+                        <div class="panel__eyebrow">Worker Detail</div>
+                        <h2 id="drawer-title">Worker detail</h2>
+                    </div>
+                    <button type="button" class="ghost-button" data-drawer-close>Close</button>
+                </div>
+                <div class="drawer-hero">
+                    <div class="drawer-hero__icon">
+                        <span class="material-symbols-rounded">deployed_code_account</span>
+                    </div>
+                    <div>
+                        <h3 id="drawer-worker-name">Unknown worker</h3>
+                        <p id="drawer-worker-subtitle">No worker selected.</p>
+                    </div>
+                </div>
+                <div class="drawer-grid">
+                    <div class="drawer-card">
+                        <span class="detail-label">Status</span>
+                        <p id="drawer-worker-status">-</p>
+                    </div>
+                    <div class="drawer-card">
+                        <span class="detail-label">Heartbeat</span>
+                        <p id="drawer-worker-heartbeat">-</p>
+                    </div>
+                    <div class="drawer-card drawer-card--full">
+                        <span class="detail-label">Base URL</span>
+                        <p id="drawer-worker-base-url">-</p>
+                    </div>
+                    <div class="drawer-card drawer-card--full">
+                        <span class="detail-label">Current Task</span>
+                        <p id="drawer-worker-task">-</p>
+                    </div>
+                    <div class="drawer-card drawer-card--full">
+                        <span class="detail-label">Capabilities</span>
+                        <div id="drawer-worker-capabilities" class="chip-row"></div>
+                    </div>
+                </div>
+            </aside>
+        </div>
 
         <main>
             {% block content %}{% endblock %}
@@ -32,6 +129,160 @@
 
     <script>
         let consoleFallbackTimer = null;
+        let consoleEventSource = null;
+        let liveUpdatesPaused = false;
+        let confirmAction = null;
+        const filterState = { query: "", mode: "all" };
+        const expandedDetails = new Set();
+
+        function showDrawer(payload) {
+            const shell = document.getElementById("console-drawer");
+            if (!shell) {
+                return;
+            }
+            const capabilityRoot = document.getElementById("drawer-worker-capabilities");
+            document.getElementById("drawer-worker-name").textContent = payload.name || "Unknown worker";
+            document.getElementById("drawer-worker-subtitle").textContent = payload.id || "-";
+            document.getElementById("drawer-worker-status").textContent = payload.status || "-";
+            document.getElementById("drawer-worker-heartbeat").textContent = payload.heartbeat || "-";
+            document.getElementById("drawer-worker-base-url").textContent = payload.baseUrl || "No base URL provided";
+            document.getElementById("drawer-worker-task").textContent = payload.task || "No task assigned";
+            capabilityRoot.innerHTML = "";
+            if (payload.capabilities.length) {
+                payload.capabilities.forEach(function (capability) {
+                    const chip = document.createElement("span");
+                    chip.className = "chip";
+                    chip.textContent = capability;
+                    capabilityRoot.appendChild(chip);
+                });
+            } else {
+                const chip = document.createElement("span");
+                chip.className = "chip chip--muted";
+                chip.textContent = "no capabilities declared";
+                capabilityRoot.appendChild(chip);
+            }
+            shell.hidden = false;
+            document.body.classList.add("body--modal-open");
+        }
+
+        function hideDrawer() {
+            const shell = document.getElementById("console-drawer");
+            if (!shell) {
+                return;
+            }
+            shell.hidden = true;
+            document.body.classList.remove("body--modal-open");
+        }
+
+        function normalizeText(value) {
+            return (value || "").toLowerCase().trim();
+        }
+
+        function shouldConfirmAction(target, action) {
+            return action === "stop" || action === "restart" || target === "cluster" || action === "cancel";
+        }
+
+        function showConfirmDialog(message, onAccept) {
+            const shell = document.getElementById("console-confirm");
+            const text = document.getElementById("confirm-message");
+            if (!shell || !text) {
+                onAccept();
+                return;
+            }
+            text.textContent = message;
+            confirmAction = onAccept;
+            shell.hidden = false;
+            document.body.classList.add("body--modal-open");
+        }
+
+        function hideConfirmDialog() {
+            const shell = document.getElementById("console-confirm");
+            if (!shell) {
+                return;
+            }
+            shell.hidden = true;
+            confirmAction = null;
+            document.body.classList.remove("body--modal-open");
+        }
+
+        function applyOverviewState() {
+            const query = normalizeText(filterState.query);
+            document.querySelectorAll("[data-entity-card]").forEach(function (node) {
+                const haystack = normalizeText(node.dataset.search);
+                const type = node.dataset.entityType || "";
+                const status = node.dataset.status || "";
+                const queryMatch = !query || haystack.includes(query);
+                const mode = filterState.mode;
+                const modeMatch = mode === "all"
+                    || (mode === "workers" && type === "worker")
+                    || (mode === "tasks" && type === "task")
+                    || (mode === "plans" && type === "plan")
+                    || (mode === "attention" && (status === "failed" || status === "stale" || status === "degraded" || status === "cancelled" || status === "offline" || status === "unhealthy"));
+                node.hidden = !(queryMatch && modeMatch);
+            });
+
+            document.querySelectorAll("[data-detail-id]").forEach(function (panel) {
+                panel.hidden = !expandedDetails.has(panel.dataset.detailId);
+            });
+
+            document.querySelectorAll("[data-toggle-detail]").forEach(function (button) {
+                const open = expandedDetails.has(button.dataset.toggleDetail);
+                button.textContent = open ? "Hide details" : "Details";
+                button.classList.toggle("mini-button--primary", open);
+            });
+        }
+
+        function getResolvedTheme(theme) {
+            if (theme === "system") {
+                return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+            }
+            return theme;
+        }
+
+        function applyTheme(theme, persist) {
+            const resolvedTheme = getResolvedTheme(theme);
+            document.documentElement.setAttribute("data-theme", resolvedTheme);
+            document.documentElement.setAttribute("data-theme-pref", theme);
+            document.querySelectorAll("[data-theme-choice]").forEach(function (button) {
+                button.classList.toggle("theme-toggle__button--active", button.dataset.themeChoice === theme);
+            });
+            if (persist) {
+                window.localStorage.setItem("legonanobot-console-theme", theme);
+            }
+        }
+
+        function showToast(message, tone) {
+            const toast = document.getElementById("console-toast");
+            if (!toast) {
+                return;
+            }
+            toast.textContent = message;
+            toast.className = "toast toast--" + (tone || "info");
+            toast.hidden = false;
+            window.clearTimeout(showToast._timer);
+            showToast._timer = window.setTimeout(function () {
+                toast.hidden = true;
+            }, 3200);
+        }
+
+        function appendActivityLog(message, tone) {
+            const log = document.getElementById("console-activity-log");
+            if (!log) {
+                return;
+            }
+            const empty = log.querySelector(".activity-log__empty");
+            if (empty) {
+                empty.remove();
+            }
+            const entry = document.createElement("div");
+            entry.className = "activity-entry activity-entry--" + (tone || "info");
+            entry.innerHTML = "<span class=\"activity-entry__time\">" + new Date().toLocaleTimeString("zh-CN", { hour12: false }) + "</span><div class=\"activity-entry__message\"></div>";
+            entry.querySelector(".activity-entry__message").textContent = message;
+            log.prepend(entry);
+            while (log.children.length > 8) {
+                log.removeChild(log.lastElementChild);
+            }
+        }
 
         function setConsoleTransportState(state, label) {
             const badge = document.getElementById("console-transport");
@@ -44,7 +295,7 @@
 
         async function refreshWebConsoleOverview() {
             const container = document.getElementById("console-overview");
-            if (!container) {
+            if (!container || liveUpdatesPaused) {
                 return;
             }
             try {
@@ -55,41 +306,340 @@
                     return;
                 }
                 container.innerHTML = await response.text();
+                applyOverviewState();
                 setConsoleTransportState("fallback", "polling");
             } catch (error) {
                 console.warn("WebConsole refresh failed", error);
             }
         }
 
-        window.addEventListener("DOMContentLoaded", function () {
-            if (window.EventSource) {
-                const source = new EventSource("/console/stream");
-                source.addEventListener("overview", function (event) {
-                    const container = document.getElementById("console-overview");
-                    if (!container) {
-                        return;
-                    }
-                    container.innerHTML = event.data;
-                    setConsoleTransportState("live", "live");
-                });
-                source.onerror = function () {
-                    setConsoleTransportState("fallback", "polling");
-                    if (!consoleFallbackTimer) {
-                        consoleFallbackTimer = window.setInterval(refreshWebConsoleOverview, 8000);
-                    }
-                };
-                source.onopen = function () {
-                    setConsoleTransportState("live", "live");
-                    if (consoleFallbackTimer) {
-                        window.clearInterval(consoleFallbackTimer);
-                        consoleFallbackTimer = null;
-                    }
-                };
+        async function requestJson(url, options) {
+            const response = await fetch(url, options || {});
+            const contentType = response.headers.get("content-type") || "";
+            const payload = contentType.includes("application/json") ? await response.json() : { detail: await response.text() };
+            if (!response.ok) {
+                throw new Error(payload.detail || payload.message || "Request failed");
+            }
+            return payload;
+        }
+
+        function setBusyState(button, busy) {
+            if (!button) {
                 return;
             }
+            button.disabled = busy;
+            button.classList.toggle("is-busy", busy);
+        }
 
-            setConsoleTransportState("fallback", "polling");
-            consoleFallbackTimer = window.setInterval(refreshWebConsoleOverview, 8000);
+        async function handleControl(button) {
+            const target = button.dataset.controlTarget;
+            const action = button.dataset.controlAction;
+            const run = async function () {
+                setBusyState(button, true);
+                try {
+                    const payload = await requestJson("/api/v1/webconsole/control/" + target + "/" + action, {
+                        method: "POST",
+                    });
+                    const tone = payload.scheduled ? "warning" : "success";
+                    showToast(payload.message, tone);
+                    appendActivityLog(target + "/" + action + " · " + payload.message, tone);
+                    if (!payload.scheduled) {
+                        window.setTimeout(refreshWebConsoleOverview, 250);
+                    } else {
+                        setConsoleTransportState("fallback", "reconnecting");
+                    }
+                } catch (error) {
+                    showToast(error.message || "Control action failed", "danger");
+                    appendActivityLog(target + "/" + action + " · " + (error.message || "failed"), "danger");
+                } finally {
+                    setBusyState(button, false);
+                }
+            };
+            if (shouldConfirmAction(target, action)) {
+                showConfirmDialog("This action can interrupt running work. Continue?", run);
+                return;
+            }
+            run();
+        }
+
+        async function handleTaskCancel(button) {
+            const taskId = button.dataset.taskCancel;
+            showConfirmDialog("Cancel this task? The worker may need to recover or reclaim work.", async function () {
+                setBusyState(button, true);
+                try {
+                    const payload = await requestJson("/api/v1/supervisor/tasks/" + taskId + "/cancel", {
+                        method: "POST",
+                    });
+                    showToast("Task cancelled", "warning");
+                    appendActivityLog("task " + payload.task.task_id + " cancelled", "warning");
+                    window.setTimeout(refreshWebConsoleOverview, 150);
+                } catch (error) {
+                    showToast(error.message || "Task cancel failed", "danger");
+                    appendActivityLog("task " + taskId + " cancel failed", "danger");
+                } finally {
+                    setBusyState(button, false);
+                }
+            });
+        }
+
+        async function handlePlanAction(button) {
+            const planId = button.dataset.planId;
+            const action = button.dataset.planAction;
+            const message = action === "approve"
+                ? "Approve this plan and enqueue ready steps?"
+                : "Cancel this plan and all pending/running work under it?";
+            showConfirmDialog(message, async function () {
+                setBusyState(button, true);
+                try {
+                    const payload = await requestJson("/api/v1/supervisor/plans/" + planId + "/" + action, {
+                        method: "POST",
+                    });
+                    showToast("Plan " + action + "d", action === "approve" ? "success" : "warning");
+                    appendActivityLog("plan " + payload.plan.plan_id + " " + action + "d", action === "approve" ? "success" : "warning");
+                    window.setTimeout(refreshWebConsoleOverview, 150);
+                } catch (error) {
+                    showToast(error.message || "Plan action failed", "danger");
+                    appendActivityLog("plan " + planId + " " + action + " failed", "danger");
+                } finally {
+                    setBusyState(button, false);
+                }
+            });
+        }
+
+        async function handleQuickTaskSubmit(form) {
+            const submit = form.querySelector("button[type='submit']");
+            const instructionInput = form.querySelector("textarea[name='instruction']");
+            const labelInput = form.querySelector("input[name='label']");
+            if (!instructionInput || !instructionInput.value.trim()) {
+                showToast("请输入任务说明", "warning");
+                instructionInput && instructionInput.focus();
+                return;
+            }
+            setBusyState(submit, true);
+            try {
+                const payload = await requestJson("/api/v1/webconsole/tasks/quick-create", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        label: labelInput ? labelInput.value.trim() : "",
+                        instruction: instructionInput.value.trim(),
+                    }),
+                });
+                showToast(payload.message, "success");
+                appendActivityLog("task " + payload.task.task_id + " created", "success");
+                form.reset();
+                window.setTimeout(refreshWebConsoleOverview, 150);
+            } catch (error) {
+                showToast(error.message || "Task create failed", "danger");
+                appendActivityLog("quick task creation failed", "danger");
+            } finally {
+                setBusyState(submit, false);
+            }
+        }
+
+        function connectOverviewStream() {
+            if (!window.EventSource) {
+                setConsoleTransportState("fallback", "polling");
+                consoleFallbackTimer = window.setInterval(refreshWebConsoleOverview, 8000);
+                return;
+            }
+            consoleEventSource = new EventSource("/console/stream");
+            consoleEventSource.addEventListener("overview", function (event) {
+                if (liveUpdatesPaused) {
+                    return;
+                }
+                const container = document.getElementById("console-overview");
+                if (!container) {
+                    return;
+                }
+                container.innerHTML = event.data;
+                applyOverviewState();
+                setConsoleTransportState("live", "live");
+            });
+            consoleEventSource.onerror = function () {
+                setConsoleTransportState("fallback", liveUpdatesPaused ? "paused" : "polling");
+                if (!consoleFallbackTimer && !liveUpdatesPaused) {
+                    consoleFallbackTimer = window.setInterval(refreshWebConsoleOverview, 8000);
+                }
+            };
+            consoleEventSource.onopen = function () {
+                setConsoleTransportState("live", liveUpdatesPaused ? "paused" : "live");
+                if (consoleFallbackTimer) {
+                    window.clearInterval(consoleFallbackTimer);
+                    consoleFallbackTimer = null;
+                }
+            };
+        }
+
+        window.addEventListener("DOMContentLoaded", function () {
+            applyTheme(document.documentElement.getAttribute("data-theme-pref") || "light", false);
+
+            document.addEventListener("click", function (event) {
+                const themeButton = event.target.closest("[data-theme-choice]");
+                if (themeButton) {
+                    applyTheme(themeButton.dataset.themeChoice, true);
+                    return;
+                }
+
+                const confirmClose = event.target.closest("[data-confirm-close]");
+                if (confirmClose) {
+                    hideConfirmDialog();
+                    return;
+                }
+
+                const drawerClose = event.target.closest("[data-drawer-close]");
+                if (drawerClose) {
+                    hideDrawer();
+                    return;
+                }
+
+                const detailToggle = event.target.closest("[data-toggle-detail]");
+                if (detailToggle) {
+                    const detailId = detailToggle.dataset.toggleDetail;
+                    if (expandedDetails.has(detailId)) {
+                        expandedDetails.delete(detailId);
+                    } else {
+                        expandedDetails.add(detailId);
+                    }
+                    applyOverviewState();
+                    return;
+                }
+
+                const workerCard = event.target.closest("[data-worker-drawer]");
+                if (workerCard && !event.target.closest("button")) {
+                    showDrawer({
+                        name: workerCard.dataset.workerName || "",
+                        id: workerCard.dataset.workerId || "",
+                        status: workerCard.dataset.workerStatus || "",
+                        heartbeat: workerCard.dataset.workerHeartbeat || "",
+                        baseUrl: workerCard.dataset.workerBaseUrl || "",
+                        task: workerCard.dataset.workerTask || "",
+                        capabilities: (workerCard.dataset.workerCapabilities || "").split("|").filter(Boolean),
+                    });
+                    return;
+                }
+
+                const drawerTrigger = event.target.closest("[data-open-worker-drawer]");
+                if (drawerTrigger) {
+                    const workerCardRoot = drawerTrigger.closest("[data-worker-drawer]");
+                    if (workerCardRoot) {
+                        showDrawer({
+                            name: workerCardRoot.dataset.workerName || "",
+                            id: workerCardRoot.dataset.workerId || "",
+                            status: workerCardRoot.dataset.workerStatus || "",
+                            heartbeat: workerCardRoot.dataset.workerHeartbeat || "",
+                            baseUrl: workerCardRoot.dataset.workerBaseUrl || "",
+                            task: workerCardRoot.dataset.workerTask || "",
+                            capabilities: (workerCardRoot.dataset.workerCapabilities || "").split("|").filter(Boolean),
+                        });
+                    }
+                    return;
+                }
+
+                const refreshButton = event.target.closest("[data-refresh-now]");
+                if (refreshButton) {
+                    refreshWebConsoleOverview();
+                    appendActivityLog("manual refresh requested", "info");
+                    return;
+                }
+
+                const liveToggle = event.target.closest("[data-live-toggle]");
+                if (liveToggle) {
+                    liveUpdatesPaused = !liveUpdatesPaused;
+                    liveToggle.textContent = liveUpdatesPaused ? "Resume live sync" : "Pause live sync";
+                    setConsoleTransportState(liveUpdatesPaused ? "fallback" : "live", liveUpdatesPaused ? "paused" : "live");
+                    appendActivityLog(liveUpdatesPaused ? "live sync paused" : "live sync resumed", "info");
+                    if (!liveUpdatesPaused) {
+                        refreshWebConsoleOverview();
+                    }
+                    return;
+                }
+
+                const controlButton = event.target.closest("[data-control-target][data-control-action]");
+                if (controlButton) {
+                    handleControl(controlButton);
+                    return;
+                }
+
+                const taskButton = event.target.closest("[data-task-cancel]");
+                if (taskButton) {
+                    handleTaskCancel(taskButton);
+                    return;
+                }
+
+                const planButton = event.target.closest("[data-plan-id][data-plan-action]");
+                if (planButton) {
+                    handlePlanAction(planButton);
+                }
+            });
+
+            document.addEventListener("submit", function (event) {
+                const form = event.target;
+                if (form && form.id === "quick-task-form") {
+                    event.preventDefault();
+                    handleQuickTaskSubmit(form);
+                }
+            });
+
+            const confirmAccept = document.getElementById("confirm-accept");
+            if (confirmAccept) {
+                confirmAccept.addEventListener("click", async function () {
+                    const action = confirmAction;
+                    hideConfirmDialog();
+                    if (action) {
+                        await action();
+                    }
+                });
+            }
+
+            const filterInput = document.getElementById("console-filter-input");
+            if (filterInput) {
+                filterInput.addEventListener("input", function (event) {
+                    filterState.query = event.target.value || "";
+                    applyOverviewState();
+                });
+            }
+
+            document.querySelectorAll("[data-filter-mode]").forEach(function (button) {
+                button.addEventListener("click", function () {
+                    filterState.mode = button.dataset.filterMode || "all";
+                    document.querySelectorAll("[data-filter-mode]").forEach(function (node) {
+                        node.classList.toggle("filter-chip--active", node === button);
+                    });
+                    applyOverviewState();
+                });
+            });
+
+            document.addEventListener("keydown", function (event) {
+                if (event.key === "Escape") {
+                    hideConfirmDialog();
+                    hideDrawer();
+                }
+                if (event.key === "/" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+                    const active = document.activeElement;
+                    if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) {
+                        return;
+                    }
+                    const input = document.getElementById("console-filter-input");
+                    if (input) {
+                        event.preventDefault();
+                        input.focus();
+                        input.select();
+                    }
+                }
+            });
+
+            const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+            if (mediaQuery.addEventListener) {
+                mediaQuery.addEventListener("change", function () {
+                    if ((document.documentElement.getAttribute("data-theme-pref") || "light") === "system") {
+                        applyTheme("system", false);
+                    }
+                });
+            }
+
+            connectOverviewStream();
+            applyOverviewState();
         });
     </script>
 </body>

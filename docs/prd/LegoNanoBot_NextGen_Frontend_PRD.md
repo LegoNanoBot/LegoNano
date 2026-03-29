@@ -36,11 +36,16 @@ Based on the benchmark of OpenAkita's *Full Feature List*, the following capabil
 | **Multi-Agent Dashboard** | Visualizing parallel delegation, handoffs, and failovers among multiple specialized agents. | P1 | 🔄 Partial in Core PRD |
 
 ## 5. User Experience & Design Guidelines (UX/UI)
-* **Theme**: Modern, minimalist, developer-focused, mandatory default **Dark Mode**.
+* **Theme**: Modern, minimalist, Google Workspace Inspired, **Light-First** by default; Dark Theme remains optional but must stay soft and readable.
+* **Iconography**: Prefer Material Symbols Rounded / Outlined and a Gmail / Google Cloud Console style for navigation, status hints, and action affordances.
 * **Dynamic Forms**: Frontend must render settings forms on the fly based on JSONSchemas provided by backend plugins (eliminating hardcoded configuration forms).
 * **Responsive State**: Worker Matrix and log streams must function without stutter under high update frequencies (employing virtualization for the X-Ray logs).
+* **Interactive Workbench**: Runtime control, quick task creation, plan approval / cancellation, and feedback surfaces should be available directly in the frontend rather than delegated to CLI.
 
 ## 6. Implementation Roadmap
 * **Milestone 1**: Project scoping, tech stack setup (React/Vue 3 + Vite), Global Dashboard skeleton, and Dynamic Plugin Configuration Forms.
+	* **当前进展**：已以 SSR WebConsole 形式完成可交互控制台第一阶段落地，包含 Google 风格控制台骨架、Worker / Task / Plan 总览、Quick Task Composer、Activity Feed 与基础控制动作。
 * **Milestone 2**: WebSocket integration, establishing the X-Ray Sandbox and Deep Thinking streaming text views.
+	* **当前进展**：SSE 驱动的 Live Overview、过滤器、详情展开与 Worker Drawer 已交付；X-Ray 深度视图仍待继续推进。
 * **Milestone 3**: Zero-Barrier Setup Wizard, Plan Mode progress tracker, and Skill Marketplace frontends.
+	* **当前进展**：Plan / Task 的审批与取消、步骤预览和前端反馈链路已具备雏形，但 Setup Wizard 与 Marketplace 仍未开始。

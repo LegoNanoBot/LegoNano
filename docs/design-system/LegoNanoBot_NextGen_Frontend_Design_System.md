@@ -2,66 +2,68 @@
 
 ## 1. 概述 (Overview)
 
-本文档基于 `LegoNanoBot_NextGen_PRD.md` 与参考竞品 OpenAkita 的架构，构建 LegoNanoBot 全新一代可视化控制面板的底层设计系统。系统严格遵循 **Dark Mode First（深色模式优先）**，定调整体视觉为冷峻、现代、专业的极客风格。
+本文档基于 `LegoNanoBot_NextGen_PRD.md` 与参考竞品 OpenAkita 的架构，构建 LegoNanoBot 全新一代可视化控制面板的底层设计系统。系统调整为 **Google Workspace Inspired, Light-First** 的亲和型控制台风格：默认浅色主题，深色模式作为补充能力存在，整体设计参考 Gmail、Google Cloud Console 与 Material 3。
 
 ---
 
 ## 2. 设计令牌 (Design Tokens)
 
-我们将提取以“科技蓝”为主品牌色的 Token 系统，所有面板交互均基于此设计体系。
+我们将提取以 Google 品牌色为核心的 Token 系统，所有面板交互均基于此设计体系，兼顾浅色与柔和深色主题。
 
 ### 2.1 颜色系统 (Color System)
 
-深色模式下，色阶针对暗色背景重新映射高对比度。
+浅色模式作为主主题，深色模式使用更低压迫感的深灰色背景。
 
-#### 品牌主色 (Primary: Cyber Blue)
-用于“知识/技能(Skills)”、可拖拽核心组件、主按钮和激活状态。
+#### 品牌主色 (Primary: Google Blue)
+用于主按钮、激活态、链接和关键操作入口。
 
-* `primary-50` : `#E6FAFF`
-* `primary-100`: `#CCF6FF`
-* `primary-200`: `#99EDFF`
-* `primary-300`: `#66E3FF`
-* `primary-400`: `#33DAFF`
-* **`primary-500`: `#00D1FF` (Base Brand Color)**
-* `primary-600`: `#00A7CC` (Hover states)
-* `primary-700`: `#007D99` (Active states)
-* `primary-800`: `#005466`
-* `primary-900`: `#002A33`
+* `primary-50` : `#E8F0FE`
+* `primary-100`: `#D2E3FC`
+* `primary-200`: `#AECBFA`
+* `primary-300`: `#8AB4F8`
+* `primary-400`: `#669DF6`
+* **`primary-500`: `#1A73E8` (Base Brand Color)**
+* `primary-600`: `#1765CC`
+* `primary-700`: `#1558B0`
+* `primary-800`: `#174EA6`
+* `primary-900`: `#0B3C8C`
 
 #### 语义系统颜色 (Semantic Colors)
 
-**正常/运转 (Healthy - Emerald Green)** -> 用于 Worker 在线、心跳正常
-* `success-400`: `#34D399`
-* **`success-500`: `#10B981`**
-* `success-600`: `#059669`
+**正常/运转 (Healthy - Google Green)** -> 用于 Worker 在线、心跳正常
+* `success-400`: `#81C995`
+* **`success-500`: `#34A853`**
+* `success-600`: `#188038`
 
-**挂起/等待 (Pending - Amber)** -> 用于模型思考中、等待 Human-in-the-loop 介入
-* `warning-400`: `#FBBF24`
-* **`warning-500`: `#F59E0B`**
-* `warning-600`: `#D97706`
+**挂起/等待 (Pending - Google Yellow / Amber)** -> 用于模型思考中、等待 Human-in-the-loop 介入
+* `warning-400`: `#FDD663`
+* **`warning-500`: `#F9AB00`**
+* `warning-600`: `#C88719`
 
-**异常/断路 (Error - Coral Red)** -> 用于工具调用失败、Token超限
-* `danger-400`: `#FB7185`
-* **`danger-500`: `#F43F5E`**
-* `danger-600`: `#E11D48`
+**异常/断路 (Error - Google Red)** -> 用于工具调用失败、Token超限
+* `danger-400`: `#F28B82`
+* **`danger-500`: `#EA4335`**
+* `danger-600`: `#C5221F`
 
-#### 背景与中性色 (Surface & Neutral: Dark Theme)
-极简的暗色灰阶。
+#### 背景与中性色 (Surface & Neutral)
+Google 风格强调浅灰背景上的白色卡片，以及深色主题中的深灰而非纯黑。
 
-* `surface-bg`: `#0F111A` (最底层的画布/背景)
-* `surface-panel`: `#1A1D27` (浮浮窗、卡片、侧边栏)
-* `surface-elevated`: `#24283B` (第二层级的悬浮模块如 X-Ray Logs)
-* `neutral-100`: `#F1F5F9` (Primary Text)
-* `neutral-300`: `#CBD5E1` (Secondary Text)
-* `neutral-500`: `#64748B` (Muted / Placeholder / Borders)
-* `neutral-800`: `#1E293B` (Dividers)
+* `surface-bg`: `#F8F9FA` (最底层画布)
+* `surface-panel`: `#FFFFFF` (主卡片、弹层)
+* `surface-elevated`: `#F1F3F4` (次一级功能面板)
+* `neutral-100`: `#202124` (Primary Text)
+* `neutral-300`: `#5F6368` (Secondary Text)
+* `neutral-500`: `#80868B` (Muted / Placeholder)
+* `neutral-700`: `#DADCE0` (Borders)
+* `surface-bg-dark`: `#202124`
+* `surface-panel-dark`: `#282A2D`
 
 ### 2.2 字体排版系统 (Typography System)
 
 遵循现代几何黑体结合等宽字体设计，建立 `1.25` Ratio (Major Third) 层级。
 
-* **Font Sans (系统主字体)**: `Inter`, `-apple-system`, `BlinkMacSystemFont`, `sans-serif`
-* **Font Mono (代码与日志字体)**: `JetBrains Mono`, `Fira Code`, `monospace` (用于 X-Ray Trace ID, Logs, JSON Schema)
+* **Font Sans (系统主字体)**: `Google Sans`, `Roboto`, `-apple-system`, `BlinkMacSystemFont`, `sans-serif`
+* **Font Mono (代码与日志字体)**: `Roboto Mono`, `JetBrains Mono`, `monospace` (用于 X-Ray Trace ID, Logs, JSON Schema)
 
 **字体缩放 (Font Scale)**
 * `text-xs`: 12px (Line height 16px) - 用于辅助信息 / Badge
@@ -89,7 +91,7 @@
   * `radius-sm`: 4px (Buttons, Inputs)
   * `radius-md`: 8px (Cards, Modals)
   * `radius-lg`: 12px (Main Layout Wrappers)
-* **深色模式质感发光 (Neon Glow)**: 代替传统阴影，关键行为节点应采用彩色弥散阴影 `0 0 12px rgba({color}, 0.3)`。
+* **阴影语言**：改用 Google 风格的柔和层叠阴影，而不是 Neon Glow。关键控件使用 `0 8px 24px rgba(60,64,67,0.12)` 一类的轻阴影。
 
 ---
 
@@ -99,9 +101,9 @@
 
 ### 3.1 基础原子组件 (Atoms)
 
-1. **CyberButton (`<CyberButton>`)**:
+1. **ConsoleButton (`<ConsoleButton>`)**:
    * 变体：`primary`, `secondary`, `danger`, `ghost`
-   * 特性：悬停有微光动效 (Neon hover FX)，禁用态采用 `opacity-50` 且置灰。
+   * 特性：圆角大按钮、轻阴影、Icon + Label 组合，禁用态采用 `opacity-50` 且置灰。
 2. **StatusNodeIndicator (`<StatusIndicator>`)**:
    * 必须严格对应 `Healthy`, `Pending`, `Error` 的呼吸闪烁动效 (Pulse Animation)。
 3. **DataLabel (`<DataLabel>`)**:
@@ -120,7 +122,7 @@
 1. **Lego Node 画布节点 (`<PluginNodeCard>`)**
    * 用于 "乐高工程车间"。包含 `Header`（展示组件Logo与类别标志）、`Port I/O` (左右连接锚点，悬停有磁吸吸附光标动效)、以及 `Body` (收起的关键状态)。
 2. **Worker 矩阵仪表卡 (`<WorkerFleetCard>`)**
-   * 组件拆解：上层为 Worker Nama + StatusIndicator，中层为微型热力图 (Sparkline chart) 展示资源占用，下层为浮动的启停/重启操作按钮栏 (Action Bar)。
+   * 组件拆解：上层为 Worker Name + StatusIndicator，中层为 Provider / Current Task / Heartbeat 信息，下层为内联启停/重启操作按钮栏 (Action Bar)。
 3. **瀑布流追踪树 / X-Ray 视图 (`<XRayWaterfallTree>`)**
    * X-Ray 沙盒右侧的核心模块。必须具有高度折叠性和懒加载 (Virtual Scrolling)。
    * 层级渲染：采用缩进与左侧辅助线，每一层带有一个耗时小标签（如 `34ms` `(Model Thinking)`）。
@@ -147,32 +149,32 @@
 
 ```css
 :root {
-  /* Surface & Background */
-  --surface-bg: #0F111A;
-  --surface-panel: #1A1D27;
+   /* Surface & Background */
+   --surface-bg: #F8F9FA;
+   --surface-panel: #FFFFFF;
   
-  /* Primary Cyber Blue */
-  --color-primary-400: #33DAFF;
-  --color-primary-500: #00D1FF;
-  --color-primary-600: #00A7CC;
+   /* Primary Google Blue */
+   --color-primary-400: #669DF6;
+   --color-primary-500: #1A73E8;
+   --color-primary-600: #1765CC;
   
   /* Semantic */
-  --color-success: #10B981;
-  --color-warning: #F59E0B;
-  --color-danger: #F43F5E;
+   --color-success: #34A853;
+   --color-warning: #F9AB00;
+   --color-danger: #EA4335;
   
   /* Typography */
-  --font-sans: 'Inter', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+   --font-sans: 'Google Sans', 'Roboto', system-ui, sans-serif;
+   --font-mono: 'Roboto Mono', 'JetBrains Mono', monospace;
   
-  /* UI FX */
-  --shadow-neon-primary: 0 0 12px rgba(0, 209, 255, 0.3);
-  --shadow-neon-danger: 0 0 12px rgba(244, 63, 94, 0.3);
+   /* UI FX */
+   --shadow-elevation-1: 0 8px 24px rgba(60, 64, 67, 0.12);
+   --shadow-elevation-2: 0 16px 36px rgba(60, 64, 67, 0.18);
 }
 
 body {
   background-color: var(--surface-bg);
-  color: var(--neutral-100);
+   color: #202124;
   font-family: var(--font-sans);
 }
 ```
@@ -184,3 +186,4 @@ body {
    * 可视化蓝图节点库：考虑引入 `React Flow` / `Vue Flow` 作为 "乐高工程车间" 基础。
    * 日志虚拟加载：引入 `react-window` / `vue-virtual-scroller` 支持高频日志。
    * 表单反射：引入类似 `react-jsonschema-form` 予以改造适配设计规范样式。
+4. [ ] **引入 Google 风格资产**：优先接入 Material Symbols、Google Sans/Roboto 字体栈，以及统一的控制台反馈组件（Toast / Activity Feed / Inline Action Buttons）。

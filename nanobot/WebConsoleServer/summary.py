@@ -210,9 +210,13 @@ async def build_system_summary(app: FastAPI) -> dict[str, Any]:
         {
             "task_id": task.task_id,
             "label": task.label or task.instruction[:72] or "Untitled task",
+            "instruction_preview": task.instruction[:180],
             "status": task.status.value if hasattr(task.status, "value") else str(task.status),
             "worker_id": task.worker_id,
             "plan_id": task.plan_id,
+            "progress_count": len(task.progress),
+            "retry_count": task.retry_count,
+            "timeout_s": task.timeout_s,
             "updated_age_s": round(max(0.0, now - float(task.updated_at or task.created_at or now)), 1),
         }
         for task in active_tasks[:6]
@@ -227,10 +231,21 @@ async def build_system_summary(app: FastAPI) -> dict[str, Any]:
             {
                 "plan_id": plan.plan_id,
                 "title": plan.title or plan.goal or "Untitled plan",
+                "goal": plan.goal,
                 "status": plan.status.value if hasattr(plan.status, "value") else str(plan.status),
                 "total_steps": total_steps,
                 "completed_steps": completed_steps,
+                "pending_steps": sum(1 for step in plan.steps if step.status == TaskStatus.PENDING),
+                "failed_steps": sum(1 for step in plan.steps if step.status == TaskStatus.FAILED),
                 "progress_percent": progress_percent,
+                "step_summaries": [
+                    {
+                        "index": step.index,
+                        "label": step.label or step.instruction[:72] or f"Step {step.index}",
+                        "status": step.status.value if hasattr(step.status, "value") else str(step.status),
+                    }
+                    for step in plan.steps[:4]
+                ],
                 "updated_age_s": round(max(0.0, now - float(plan.updated_at or plan.created_at or now)), 1),
             }
         )

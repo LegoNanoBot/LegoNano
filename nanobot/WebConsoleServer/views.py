@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -12,10 +13,25 @@ from nanobot.WebConsoleServer.summary import build_system_summary
 
 router = APIRouter(tags=["webconsole-pages"])
 
+_WEBCONSOLE_STATIC_DIR = Path(__file__).with_name("static")
+
+
+def _get_asset_version() -> str:
+    css_path = _WEBCONSOLE_STATIC_DIR / "webconsole.css"
+    if not css_path.exists():
+        return "dev"
+    return str(int(css_path.stat().st_mtime_ns))
+
+
+async def _build_page_context(request: Request) -> dict:
+    context = await build_system_summary(request.app)
+    context["asset_version"] = _get_asset_version()
+    return context
+
 
 async def _render_overview_fragment(request: Request) -> str:
     templates = request.app.state.webconsole_templates
-    context = await build_system_summary(request.app)
+    context = await _build_page_context(request)
     response = templates.TemplateResponse(request, "partials/overview.html", context=context)
     return response.body.decode("utf-8")
 
@@ -28,7 +44,7 @@ async def root() -> RedirectResponse:
 @router.get("/console", response_class=HTMLResponse)
 async def console_index(request: Request):
     templates = request.app.state.webconsole_templates
-    context = await build_system_summary(request.app)
+    context = await _build_page_context(request)
     context["page"] = "console"
     return templates.TemplateResponse(request, "index.html", context=context)
 
@@ -36,7 +52,7 @@ async def console_index(request: Request):
 @router.get("/console/partials/overview", response_class=HTMLResponse)
 async def console_overview(request: Request):
     templates = request.app.state.webconsole_templates
-    context = await build_system_summary(request.app)
+    context = await _build_page_context(request)
     return templates.TemplateResponse(request, "partials/overview.html", context=context)
 
 

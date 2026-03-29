@@ -1,33 +1,51 @@
 <div class="status-banner status-banner--{{ system_status.tone }}">
-    <div>
+    <div class="status-banner__copy">
         <div class="status-banner__label">{{ system_status.label }}</div>
         <p>{{ system_status.detail }}</p>
+        <div class="status-banner__chips">
+            <span class="chip chip--soft">{{ worker_counts.total }} workers</span>
+            <span class="chip chip--soft">{{ task_counts.total }} tasks</span>
+            <span class="chip chip--soft">{{ plan_counts.total }} plans</span>
+            {% if observability.enabled %}
+            <span class="chip chip--soft">{{ observability.active_runs }} active traces</span>
+            {% endif %}
+        </div>
     </div>
-    <div class="status-banner__meta">Updated {{ generated_at }}</div>
+    <div class="status-banner__meta">
+        <span>Updated {{ generated_at }}</span>
+        {% if observability.enabled and links.xray_dashboard %}
+        <a class="inline-link" href="{{ links.xray_dashboard }}">Open observability</a>
+        {% endif %}
+    </div>
 </div>
 
 <section class="stats-grid">
     <article class="stat-card stat-card--slate">
+        <div class="stat-card__icon"><span class="material-symbols-rounded">dns</span></div>
         <span class="stat-card__label">Runtime</span>
         <strong>{{ runtime.counts.running }}</strong>
         <p>{{ runtime.counts.stale }} stale · {{ runtime.counts.stopped }} stopped</p>
     </article>
     <article class="stat-card stat-card--emerald">
+        <div class="stat-card__icon"><span class="material-symbols-rounded">deployed_code_account</span></div>
         <span class="stat-card__label">Worker Fleet</span>
         <strong>{{ worker_counts.total }}</strong>
         <p>{{ worker_counts.online + worker_counts.busy }} online or busy · {{ worker_counts.stale }} stale</p>
     </article>
     <article class="stat-card stat-card--amber">
+        <div class="stat-card__icon"><span class="material-symbols-rounded">pending_actions</span></div>
         <span class="stat-card__label">Task Queue</span>
         <strong>{{ task_counts.total }}</strong>
         <p>{{ task_queue_pressure }} waiting for execution · {{ task_counts.running }} running</p>
     </article>
     <article class="stat-card stat-card--blue">
+        <div class="stat-card__icon"><span class="material-symbols-rounded">account_tree</span></div>
         <span class="stat-card__label">Plan Engine</span>
         <strong>{{ plan_counts.total }}</strong>
         <p>{{ plan_counts.executing }} executing · {{ plan_counts.completed }} completed</p>
     </article>
     <article class="stat-card stat-card--violet">
+        <div class="stat-card__icon"><span class="material-symbols-rounded">visibility</span></div>
         <span class="stat-card__label">Observability</span>
         <strong>{% if observability.enabled %}{{ observability.active_runs }}{% else %}off{% endif %}</strong>
         <p>
@@ -55,11 +73,11 @@
         {% if workers %}
         <div class="worker-list">
             {% for worker in workers %}
-            <div class="worker-card worker-card--{{ worker.status }} {% if worker.is_stale %}worker-card--stale{% endif %}">
+            <div class="worker-card worker-card--{{ worker.status }} {% if worker.is_stale %}worker-card--stale{% endif %}" data-entity-card data-entity-type="worker" data-status="{{ 'stale' if worker.is_stale else worker.status }}" data-search="{{ worker.name }} {{ worker.worker_id }} {{ worker.status }} {{ worker.base_url or '' }} {{ worker.capabilities|join(' ') }} {{ worker.current_task_id or '' }}" data-worker-drawer data-worker-name="{{ worker.name }}" data-worker-id="{{ worker.worker_id }}" data-worker-status="{{ 'stale' if worker.is_stale else worker.status }}" data-worker-heartbeat="heartbeat {{ worker.heartbeat_age_s }}s ago" data-worker-base-url="{{ worker.base_url or '' }}" data-worker-task="{{ worker.current_task_id or '' }}" data-worker-capabilities="{{ worker.capabilities|join('|') }}">
                 <div class="worker-card__top">
                     <div>
                         <h3>{{ worker.name }}</h3>
-                        <p>{{ worker.worker_id }}</p>
+                        <p>{{ worker.worker_id }}{% if worker.base_url %} · {{ worker.base_url }}{% endif %}</p>
                     </div>
                     <span class="status-pill status-pill--{{ 'degraded' if worker.is_stale else worker.status }}">{{ 'stale' if worker.is_stale else worker.status }}</span>
                 </div>
@@ -68,6 +86,7 @@
                     {% if worker.current_task_id %}
                     <span>task {{ worker.current_task_id }}</span>
                     {% endif %}
+                    <button type="button" class="mini-button mini-button--primary" data-open-worker-drawer>Open drawer</button>
                 </div>
                 <div class="chip-row">
                     {% if worker.capabilities %}
@@ -112,6 +131,20 @@
                     <div class="list-row__meta">
                         <span class="status-pill status-pill--{{ component.state }}">{{ component.state }}</span>
                         {% if component.pid %}<span class="muted">PID {{ component.pid }}</span>{% endif %}
+                        {% if component.name == 'gateway' %}
+                        <div class="row-actions">
+                            <button type="button" class="mini-button" data-control-target="gateway" data-control-action="restart">Restart</button>
+                            {% if component.state == 'running' %}
+                            <button type="button" class="mini-button mini-button--danger" data-control-target="gateway" data-control-action="stop">Stop</button>
+                            {% else %}
+                            <button type="button" class="mini-button mini-button--primary" data-control-target="gateway" data-control-action="start">Start</button>
+                            {% endif %}
+                        </div>
+                        {% elif component.name == 'supervisor' %}
+                        <div class="row-actions">
+                            <button type="button" class="mini-button mini-button--primary" data-control-target="supervisor" data-control-action="restart">Restart</button>
+                        </div>
+                        {% endif %}
                     </div>
                 </div>
                 {% endfor %}
@@ -129,7 +162,7 @@
             {% if active_tasks %}
             <div class="list">
                 {% for task in active_tasks %}
-                <div class="list-row">
+                <div class="list-row list-row--stacked" data-entity-card data-entity-type="task" data-status="{{ task.status }}" data-search="{{ task.label }} {{ task.task_id }} {{ task.status }} {{ task.worker_id or '' }} {{ task.plan_id or '' }} {{ task.instruction_preview }}">
                     <div>
                         <h3>{{ task.label }}</h3>
                         <p>{{ task.task_id }} · {{ task.updated_age_s }}s ago</p>
@@ -137,6 +170,28 @@
                     <div class="list-row__meta">
                         <span class="status-pill status-pill--{{ task.status }}">{{ task.status }}</span>
                         {% if task.worker_id %}<span class="muted">{{ task.worker_id }}</span>{% endif %}
+                        <button type="button" class="mini-button" data-toggle-detail="task-{{ task.task_id }}">Details</button>
+                        <button type="button" class="mini-button mini-button--danger" data-task-cancel="{{ task.task_id }}">Cancel</button>
+                    </div>
+                    <div class="detail-panel" data-detail-id="task-{{ task.task_id }}" hidden>
+                        <div class="detail-grid">
+                            <div>
+                                <span class="detail-label">Instruction</span>
+                                <p>{{ task.instruction_preview }}</p>
+                            </div>
+                            <div>
+                                <span class="detail-label">Plan</span>
+                                <p>{{ task.plan_id or 'ad-hoc task' }}</p>
+                            </div>
+                            <div>
+                                <span class="detail-label">Progress events</span>
+                                <p>{{ task.progress_count }}</p>
+                            </div>
+                            <div>
+                                <span class="detail-label">Retries / Timeout</span>
+                                <p>{{ task.retry_count }} retries · {{ task.timeout_s or 'n/a' }}s</p>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 {% endfor %}
@@ -160,7 +215,7 @@
             {% if recent_plans %}
             <div class="plan-list">
                 {% for plan in recent_plans %}
-                <div class="plan-card">
+                <div class="plan-card" data-entity-card data-entity-type="plan" data-status="{{ plan.status }}" data-search="{{ plan.title }} {{ plan.plan_id }} {{ plan.status }} {{ plan.goal }} {% for step in plan.step_summaries %}{{ step.label }} {{ step.status }} {% endfor %}">
                     <div class="plan-card__top">
                         <div>
                             <h3>{{ plan.title }}</h3>
@@ -173,7 +228,40 @@
                     </div>
                     <div class="plan-card__footer">
                         <span>{{ plan.completed_steps }}/{{ plan.total_steps }} steps</span>
-                        <strong>{{ plan.progress_percent }}%</strong>
+                        <div class="plan-card__actions">
+                            <button type="button" class="mini-button" data-toggle-detail="plan-{{ plan.plan_id }}">Details</button>
+                            {% if plan.status == 'draft' %}
+                            <button type="button" class="mini-button mini-button--primary" data-plan-id="{{ plan.plan_id }}" data-plan-action="approve">Approve</button>
+                            {% endif %}
+                            {% if plan.status in ('approved', 'executing') %}
+                            <button type="button" class="mini-button mini-button--danger" data-plan-id="{{ plan.plan_id }}" data-plan-action="cancel">Cancel</button>
+                            {% endif %}
+                            <strong>{{ plan.progress_percent }}%</strong>
+                        </div>
+                    </div>
+                    <div class="detail-panel" data-detail-id="plan-{{ plan.plan_id }}" hidden>
+                        <div class="detail-grid detail-grid--plan">
+                            <div>
+                                <span class="detail-label">Goal</span>
+                                <p>{{ plan.goal or 'No goal provided.' }}</p>
+                            </div>
+                            <div>
+                                <span class="detail-label">Step health</span>
+                                <p>{{ plan.pending_steps }} pending · {{ plan.failed_steps }} failed</p>
+                            </div>
+                            <div class="detail-grid__full">
+                                <span class="detail-label">Step preview</span>
+                                <div class="step-preview-list">
+                                    {% for step in plan.step_summaries %}
+                                    <div class="step-preview-row">
+                                        <span class="step-preview-row__index">{{ step.index }}</span>
+                                        <span class="step-preview-row__label">{{ step.label }}</span>
+                                        <span class="status-pill status-pill--{{ step.status }}">{{ step.status }}</span>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 {% endfor %}
