@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI
 from loguru import logger
 
+from nanobot.WebConsoleServer import api as webconsole_api
+from nanobot.WebConsoleServer import views as webconsole_views
 from nanobot.supervisor.event_sink import XRayCollectorEventSink
 from nanobot.agent.memory import MemoryStore
 from nanobot.supervisor.api import memory, plans, sessions, tasks, workers
@@ -75,6 +77,18 @@ def create_supervisor_app(
     app.include_router(plans.router, prefix="/api/v1")
     app.include_router(sessions.router, prefix="/api/v1")
     app.include_router(memory.router, prefix="/api/v1")
+    app.include_router(webconsole_api.router, prefix="/api/v1")
+
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.templating import Jinja2Templates
+
+    webconsole_static_dir = Path(__file__).parent.parent / "WebConsoleServer" / "static"
+    webconsole_templates_dir = Path(__file__).parent.parent / "WebConsoleServer" / "templates"
+    webconsole_static_dir.mkdir(parents=True, exist_ok=True)
+    webconsole_templates_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/console-assets", StaticFiles(directory=str(webconsole_static_dir)), name="webconsole-static")
+    app.state.webconsole_templates = Jinja2Templates(directory=str(webconsole_templates_dir))
+    app.include_router(webconsole_views.router)
 
     # Mount X-Ray routers if stores are provided
     if event_store is not None and sse_hub is not None and collector is not None:
@@ -91,10 +105,6 @@ def create_supervisor_app(
         app.include_router(config.router, prefix="/api/v1")
         app.include_router(tokens.router, prefix="/api/v1")
         app.include_router(pages_views.router)
-
-        # Static files and templates
-        from fastapi.staticfiles import StaticFiles
-        from fastapi.templating import Jinja2Templates
 
         static_dir = Path(__file__).parent.parent / "xray" / "static"
         static_dir.mkdir(exist_ok=True)

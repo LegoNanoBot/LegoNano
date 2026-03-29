@@ -28,4 +28,5 @@ nano.*.save
 .DS_Store
 logs/
 pids/
+frontend/
 

@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}LegoNanoBot WebConsoleServer{% endblock %}</title>
+    <link rel="stylesheet" href="/console-assets/webconsole.css">
+</head>
+<body>
+    <div class="shell">
+        <header class="hero">
+            <div class="hero__eyebrow">PHASE 1 · WebConsoleServer</div>
+            <div class="hero__head">
+                <div>
+                    <h1>LegoNanoBot System Console</h1>
+                    <p>最小可用入口页，集中呈现 worker、task、plan 与 X-Ray 的整体状态。</p>
+                </div>
+                <div class="hero__actions">
+                    <span id="console-transport" class="transport-badge transport-badge--loading">connecting</span>
+                    <a class="ghost-button" href="{{ links.api_docs }}">API Docs</a>
+                    {% if links.xray_dashboard %}
+                    <a class="primary-button" href="{{ links.xray_dashboard }}">Open X-Ray</a>
+                    {% endif %}
+                </div>
+            </div>
+        </header>
+
+        <main>
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+    <script>
+        let consoleFallbackTimer = null;
+
+        function setConsoleTransportState(state, label) {
+            const badge = document.getElementById("console-transport");
+            if (!badge) {
+                return;
+            }
+            badge.className = "transport-badge transport-badge--" + state;
+            badge.textContent = label;
+        }
+
+        async function refreshWebConsoleOverview() {
+            const container = document.getElementById("console-overview");
+            if (!container) {
+                return;
+            }
+            try {
+                const response = await fetch("/console/partials/overview", {
+                    headers: { "X-Requested-With": "webconsole" },
+                });
+                if (!response.ok) {
+                    return;
+                }
+                container.innerHTML = await response.text();
+                setConsoleTransportState("fallback", "polling");
+            } catch (error) {
+                console.warn("WebConsole refresh failed", error);
+            }
+        }
+
+        window.addEventListener("DOMContentLoaded", function () {
+            if (window.EventSource) {
+                const source = new EventSource("/console/stream");
+                source.addEventListener("overview", function (event) {
+                    const container = document.getElementById("console-overview");
+                    if (!container) {
+                        return;
+                    }
+                    container.innerHTML = event.data;
+                    setConsoleTransportState("live", "live");
+                });
+                source.onerror = function () {
+                    setConsoleTransportState("fallback", "polling");
+                    if (!consoleFallbackTimer) {
+                        consoleFallbackTimer = window.setInterval(refreshWebConsoleOverview, 8000);
+                    }
+                };
+                source.onopen = function () {
+                    setConsoleTransportState("live", "live");
+                    if (consoleFallbackTimer) {
+                        window.clearInterval(consoleFallbackTimer);
+                        consoleFallbackTimer = null;
+                    }
+                };
+                return;
+            }
+
+            setConsoleTransportState("fallback", "polling");
+            consoleFallbackTimer = window.setInterval(refreshWebConsoleOverview, 8000);
+        });
+    </script>
+</body>
+</html>

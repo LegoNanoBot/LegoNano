@@ -11,6 +11,10 @@
   - 说明当前代码状态下 supervisor、worker、gateway、channel 的正确启动顺序。
   - 适合排查“为什么 API 可用但 channel 不可用”这类问题。
 
+- [WebConsoleServer Phase 1](webconsole-phase-1.md)
+  - 记录浏览器入口页的目标范围、路由、运行方式、测试方式和当前边界。
+  - 适合快速理解 `/console` 这次交付到底包含什么、没包含什么。
+
 - [Phase 0 Release Note](release-notes/phase-0-mvp.md)
   - 记录 MVP 验证阶段的交付、测试、设计决策与历史快照。
 
@@ -33,4 +37,5 @@
 
 - 了解全景规划及未来展望：优先阅读 [全局蓝图归档](SUPERVISOR_BLUEPRINT.md)
 - 查已经做过什么、为什么这么做：进入对应 release note
+- 查当前浏览器控制台入口页：阅读 [WebConsoleServer Phase 1](webconsole-phase-1.md)
 - 需要整理历史上下文：先看本索引，再跳转到对应阶段文档

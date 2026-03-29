@@ -1,0 +1,189 @@
+<div class="status-banner status-banner--{{ system_status.tone }}">
+    <div>
+        <div class="status-banner__label">{{ system_status.label }}</div>
+        <p>{{ system_status.detail }}</p>
+    </div>
+    <div class="status-banner__meta">Updated {{ generated_at }}</div>
+</div>
+
+<section class="stats-grid">
+    <article class="stat-card stat-card--slate">
+        <span class="stat-card__label">Runtime</span>
+        <strong>{{ runtime.counts.running }}</strong>
+        <p>{{ runtime.counts.stale }} stale · {{ runtime.counts.stopped }} stopped</p>
+    </article>
+    <article class="stat-card stat-card--emerald">
+        <span class="stat-card__label">Worker Fleet</span>
+        <strong>{{ worker_counts.total }}</strong>
+        <p>{{ worker_counts.online + worker_counts.busy }} online or busy · {{ worker_counts.stale }} stale</p>
+    </article>
+    <article class="stat-card stat-card--amber">
+        <span class="stat-card__label">Task Queue</span>
+        <strong>{{ task_counts.total }}</strong>
+        <p>{{ task_queue_pressure }} waiting for execution · {{ task_counts.running }} running</p>
+    </article>
+    <article class="stat-card stat-card--blue">
+        <span class="stat-card__label">Plan Engine</span>
+        <strong>{{ plan_counts.total }}</strong>
+        <p>{{ plan_counts.executing }} executing · {{ plan_counts.completed }} completed</p>
+    </article>
+    <article class="stat-card stat-card--violet">
+        <span class="stat-card__label">Observability</span>
+        <strong>{% if observability.enabled %}{{ observability.active_runs }}{% else %}off{% endif %}</strong>
+        <p>
+            {% if observability.enabled %}
+            {{ observability.sse_subscribers }} SSE · {{ observability.total_tokens }} tokens
+            {% else %}
+            X-Ray collector not mounted
+            {% endif %}
+        </p>
+    </article>
+</section>
+
+<section class="board-grid">
+    <article class="panel">
+        <div class="panel__header">
+            <div>
+                <span class="panel__eyebrow">Fleet</span>
+                <h2>Worker Matrix</h2>
+            </div>
+            <div class="meter">
+                <span>Utilization</span>
+                <strong>{{ worker_utilization_percent }}%</strong>
+            </div>
+        </div>
+        {% if workers %}
+        <div class="worker-list">
+            {% for worker in workers %}
+            <div class="worker-card worker-card--{{ worker.status }} {% if worker.is_stale %}worker-card--stale{% endif %}">
+                <div class="worker-card__top">
+                    <div>
+                        <h3>{{ worker.name }}</h3>
+                        <p>{{ worker.worker_id }}</p>
+                    </div>
+                    <span class="status-pill status-pill--{{ 'degraded' if worker.is_stale else worker.status }}">{{ 'stale' if worker.is_stale else worker.status }}</span>
+                </div>
+                <div class="worker-card__meta">
+                    <span>heartbeat {{ worker.heartbeat_age_s }}s ago</span>
+                    {% if worker.current_task_id %}
+                    <span>task {{ worker.current_task_id }}</span>
+                    {% endif %}
+                </div>
+                <div class="chip-row">
+                    {% if worker.capabilities %}
+                        {% for capability in worker.capabilities[:5] %}
+                        <span class="chip">{{ capability }}</span>
+                        {% endfor %}
+                    {% else %}
+                    <span class="chip chip--muted">no capabilities declared</span>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <h3>No workers yet</h3>
+            <p>当 worker 完成注册后，这里会显示在线状态、能力标签和当前任务。</p>
+        </div>
+        {% endif %}
+    </article>
+
+    <div class="stack">
+        <article class="panel">
+            <div class="panel__header">
+                <div>
+                    <span class="panel__eyebrow">Runtime</span>
+                    <h2>Managed Components</h2>
+                </div>
+                <div class="count-badge">{{ runtime.counts.total }}</div>
+            </div>
+            <div class="runtime-meta">
+                <span>PID {{ runtime.pid_dir }}</span>
+                <span>LOG {{ runtime.log_dir }}</span>
+            </div>
+            <div class="list">
+                {% for component in runtime.components %}
+                <div class="list-row">
+                    <div>
+                        <h3>{{ component.label }}</h3>
+                        <p>{{ component.detail }}</p>
+                    </div>
+                    <div class="list-row__meta">
+                        <span class="status-pill status-pill--{{ component.state }}">{{ component.state }}</span>
+                        {% if component.pid %}<span class="muted">PID {{ component.pid }}</span>{% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </article>
+
+        <article class="panel">
+            <div class="panel__header">
+                <div>
+                    <span class="panel__eyebrow">Execution</span>
+                    <h2>Active Tasks</h2>
+                </div>
+                <div class="count-badge">{{ active_tasks|length }}</div>
+            </div>
+            {% if active_tasks %}
+            <div class="list">
+                {% for task in active_tasks %}
+                <div class="list-row">
+                    <div>
+                        <h3>{{ task.label }}</h3>
+                        <p>{{ task.task_id }} · {{ task.updated_age_s }}s ago</p>
+                    </div>
+                    <div class="list-row__meta">
+                        <span class="status-pill status-pill--{{ task.status }}">{{ task.status }}</span>
+                        {% if task.worker_id %}<span class="muted">{{ task.worker_id }}</span>{% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty-state empty-state--compact">
+                <h3>No active tasks</h3>
+                <p>当前没有运行中或已分配的任务。</p>
+            </div>
+            {% endif %}
+        </article>
+
+        <article class="panel">
+            <div class="panel__header">
+                <div>
+                    <span class="panel__eyebrow">Plans</span>
+                    <h2>Recent Plans</h2>
+                </div>
+                <div class="count-badge">{{ recent_plans|length }}</div>
+            </div>
+            {% if recent_plans %}
+            <div class="plan-list">
+                {% for plan in recent_plans %}
+                <div class="plan-card">
+                    <div class="plan-card__top">
+                        <div>
+                            <h3>{{ plan.title }}</h3>
+                            <p>{{ plan.plan_id }} · {{ plan.updated_age_s }}s ago</p>
+                        </div>
+                        <span class="status-pill status-pill--{{ plan.status }}">{{ plan.status }}</span>
+                    </div>
+                    <div class="progress-track">
+                        <div class="progress-bar" style="width: {{ plan.progress_percent }}%;"></div>
+                    </div>
+                    <div class="plan-card__footer">
+                        <span>{{ plan.completed_steps }}/{{ plan.total_steps }} steps</span>
+                        <strong>{{ plan.progress_percent }}%</strong>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty-state empty-state--compact">
+                <h3>No plans</h3>
+                <p>当计划创建并进入执行流后，这里会显示完成度。</p>
+            </div>
+            {% endif %}
+        </article>
+    </div>
+</section>

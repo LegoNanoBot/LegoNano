@@ -81,6 +81,7 @@ See [Supervisor Gateway](#-supervisor-gateway) for usage details.
 - [Configuration](#️-configuration)
 - [X-Ray Monitoring](#-x-ray-monitoring)
 - [Supervisor Gateway](#-supervisor-gateway)
+- [Web Console](#-web-console)
 - [Multiple Instances](#-multiple-instances)
 - [CLI Reference](#-cli-reference)
 - [Docker](#-docker)
@@ -1508,6 +1509,54 @@ Workers automatically register, poll for pending tasks, execute them, and report
 - The **Watchdog** scans for workers whose heartbeat is overdue (default: 120s timeout)
 - Dead workers are evicted and their in-flight tasks are re-queued as **pending**
 - Another worker picks up the re-queued task automatically
+
+## 🌐 Web Console
+
+LegoNanoBot now ships a supervisor-hosted phase-1 WebConsoleServer for browser-based system visibility.
+
+### What Phase-1 Includes
+
+- A minimal system entry page at `/console`
+- SSR dashboard cards for runtime, worker fleet, task queue, plan engine, and observability
+- Worker matrix, active tasks, recent plans, and managed component status
+- Mobile-friendly stacked layout for narrow screens
+- Live refresh via SSE with polling fallback
+
+### Routes
+
+| Route | Description |
+|-------|-------------|
+| `/console` | Main WebConsoleServer dashboard |
+| `/console/partials/overview` | Server-rendered overview fragment |
+| `/console/stream` | SSE stream for live dashboard refresh |
+| `/api/v1/webconsole/summary` | JSON summary consumed by the dashboard |
+
+### Start And Access
+
+Use the repo scripts to start the full local control plane:
+
+```bash
+./sbin/start-supervisor.sh
+./sbin/start-nanobot.sh
+```
+
+Then open:
+
+```text
+http://127.0.0.1:9200/console
+```
+
+The same supervisor process continues to expose the REST API and, when enabled, the X-Ray dashboard.
+
+### Verification
+
+```bash
+PYTHONPATH=. pytest -q tests/test_webconsole_server.py tests/test_supervisor_api.py
+```
+
+### Documentation
+
+See `docs/supervisor/webconsole-phase-1.md` for scope, design decisions, and known follow-up items.
 
 ## �🧩 Multiple Instances
 
